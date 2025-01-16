@@ -62,9 +62,9 @@ Ensure you have the following installed or configured:
 
 6. **Downloading Meshes and Models**
 
-   The meshes and models required for the project are stored on Dropbox. Please download them manually using a NUS Dropbox account via the following link:
+   The meshes and models required for the project are stored on nBox. Please download them manually using a NUS account via the following link:
 
-   [Download Link](https://www.dropbox.com/scl/fo/t07x7b0d9kts21gyi2d8y/AA9Aq2I6uk70rfKt75SZD1M?rlkey=bphh5xz01je5tdcokymkq33k8&st=xxydhhtu&dl=0)
+   [Download Link](https://nusu-my.sharepoint.com/:u:/g/personal/tianrun_nus_edu_sg/EYZGSOMYA59Phdb_twMSETkB09yb540NqVwjMgn9cR0jmQ)
 
    After downloading, place the `models` folder into the following directory:
 
