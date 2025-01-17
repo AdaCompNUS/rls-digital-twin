@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<launch>
+	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find low_level_planning)/rviz/robot_rls_demo.rviz" output="screen"/>
+</launch>

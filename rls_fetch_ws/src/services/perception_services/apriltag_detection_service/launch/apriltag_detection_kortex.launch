@@ -1,0 +1,10 @@
+<launch>
+    <param name="apriltag_camera_frame" type="string" value="camera_color_frame"/>
+
+    <include file="$(find apriltag_ros)/launch/continuous_detection.launch">
+        <arg name="camera_name" value="kortex/camera/color"/>
+        <arg name="image_topic" value="image_rect_color"/>
+        <arg name="camera_frame" value="camera_color_frame"/>
+    </include>
+</launch>
+

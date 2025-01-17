@@ -1,0 +1,10 @@
+<launch>
+    <param name="apriltag_camera_frame" type="string" value="kinect2_rgb_optical_frame"/>
+
+    <include file="$(find apriltag_ros)/launch/continuous_detection.launch">
+        <arg name="camera_name" value="kinect2/qhd" />
+        <arg name="image_topic" value="image_color_rect" />
+        <arg name="camera_frame" value="kinect2_rgb_optical_frame"/>
+    </include>
+</launch>
+

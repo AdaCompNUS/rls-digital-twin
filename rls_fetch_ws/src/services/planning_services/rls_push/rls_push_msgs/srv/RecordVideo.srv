@@ -1,0 +1,7 @@
+sensor_msgs/Image img_goal
+std_msgs/Bool start
+std_msgs/String file_name
+
+---
+
+std_msgs/Bool ok

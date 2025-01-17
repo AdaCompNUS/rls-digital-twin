@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+
+<launch>
+    <!-- launch moveit on fetch-->
+    <include file="$(find fetch_moveit_config)/launch/move_group.launch"/>
+
+    <!-- launch fetch cartesian service-->
+    <!-- <include file="$(find cartesian_service)/launch/fetch_cartesian_service.launch"/> -->
+
+    <!-- launch fetch navigation service -->
+    <include file="$(find fetch_navigation)/launch/fetch_nav.launch" >
+        <arg name="map_file" value="$(find low_level_planning)/maps/simulation.yaml" />
+        <arg name="move_base_include" default="$(find low_level_planning)/launch/include/move_base.launch.xml"/>
+        <arg name="amcl_include" default="$(find low_level_planning)/launch/include/amcl.launch.xml"/>
+    </include>
+
+    <!-- Compress RGB image -->
+    <node name="compress_rgb" pkg="image_transport" type="republish" args="raw in:=/head_camera/rgb/image_raw compressed out:=/head_camera/rgb/image_raw" />
+    <node pkg="topic_tools" type="throttle" name="throttle_messages" args="messages /head_camera/rgb/image_raw/compressed 20.0" />
+
+    <!-- Compress Depth image -->
+    <node name="compress_depth" pkg="image_transport" type="republish" args="raw in:=/head_camera/depth/image_raw compressed out:=/head_camera/depth/image_raw" />
+    <node pkg="topic_tools" type="throttle" name="throttle_messages_depth" args="messages /head_camera/depth/image_raw/compressed 20.0" />
+
+    <node pkg="topic_tools" type="throttle" name="throttle_messages_state" args="messages /joint_states 36.0" />
+    <node pkg="topic_tools" type="throttle" name="throttle_messages_pc" args="messages /head_camera/depth_downsample/points 1.0" />
+</launch>

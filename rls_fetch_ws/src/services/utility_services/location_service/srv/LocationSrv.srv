@@ -1,0 +1,9 @@
+int8 action # 0 for set, 1 for get, 2 for forget
+string name
+geometry_msgs/Pose pose
+bool save # for set and forget, set it to true to save it permanently
+
+---
+
+bool success
+geometry_msgs/Pose pose

@@ -1,0 +1,12 @@
+ObservationDESPOT[] obs
+bool first_obs
+int64 target
+bool seg_fail
+
+---
+
+int64 success
+int64 id
+int64 x
+int64 y
+int64 reward

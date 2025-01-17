@@ -1,0 +1,19 @@
+int8 RECOGNIZE = 0
+int8 REMEMBER_NEW_SPEAKER = 1
+
+# for recognize
+int8 FILE = 0
+int8 AUDIO = 1
+
+int8 action
+
+# for recognize
+int8 type
+
+string filename
+string audio_string
+
+---
+bool success
+string speaker
+float32 score

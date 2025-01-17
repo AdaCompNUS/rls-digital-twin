@@ -1,0 +1,25 @@
+int8 MOVE_TO_POSE = 0
+int8 MOVE_TO_JOINT = 1
+int8 MOVE_IN_CARTESIAN = 2
+
+int8 LEFT_ARM = 0
+int8 RIGHT_ARM = 1
+
+int8 action # which action
+int8 arm # which arm
+
+geometry_msgs/PoseStamped pose_goal
+float32[] joint_goal
+float32[] cartesian_goal # dx, dy, dz
+
+# others
+bool plan_only
+# float32 allowed_planning_time
+# float32 execution_timeout
+# int32 num_planning_attempts
+# bool replan
+# int32 replan_attempts
+
+---
+
+bool success

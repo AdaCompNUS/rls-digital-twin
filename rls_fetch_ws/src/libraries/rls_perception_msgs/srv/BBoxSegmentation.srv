@@ -1,0 +1,18 @@
+float32 x
+float32 y
+float32 width
+float32 height
+float32 angle # for oriented bbox
+
+# transform to reference frame
+bool transform_to_reference_frame
+string reference_frame
+
+## Threshold
+float32 min_z
+
+---
+
+sensor_msgs/PointCloud2 cluster
+Object3DV2 object
+int32 num_points

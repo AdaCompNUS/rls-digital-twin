@@ -1,0 +1,12 @@
+<launch>
+
+    <arg name="combined_pcl_name" value="/kinect2/qhd/points" />
+
+    <include file="$(find pcl_segmentation_service)/launch/movo_tabletop_segmentation_config.launch" >
+        <arg name="tabletop_segmentation_points_in" value="$(arg combined_pcl_name)" />
+    </include>
+
+    <!-- node pkg="rls_push_vision" type="image_fetch.py" name="image_fetch" output="screen" / -->
+
+</launch>
+

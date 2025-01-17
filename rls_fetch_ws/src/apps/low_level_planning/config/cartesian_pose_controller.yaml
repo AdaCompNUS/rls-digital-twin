@@ -1,0 +1,12 @@
+cartesian_pose_controller:
+  type: "robot_controllers/CartesianPoseController"
+  root_name: "base_link"  # Adjust as per your robot's kinematic configuration
+  tip_name: "gripper_link"
+  fb_trans:
+    p_gain: 5.0  # Example values
+    i_gain: 0.0  # Integral gain set to zero
+    d_gain: 0.1
+  fb_rot:
+    p_gain: 4.0
+    i_gain: 0.0  # Integral gain set to zero
+    d_gain: 0.05

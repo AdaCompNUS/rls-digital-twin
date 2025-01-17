@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- movo perception drivers -->
+
+    <!-- movo control drivers -->
+    <include file="$(find launch_fetch_drivers)/launch/rls_fetch_control_drivers.launch"/>
+
+    <!-- movo util drivers -->
+
+</launch>

@@ -1,0 +1,10 @@
+<launch>
+    <param name="apriltag_camera_frame" type="string" value="head_camera_rgb_optical_frame"/>
+
+    <include file="$(find apriltag_ros)/launch/continuous_detection.launch">
+        <arg name="camera_name" value="/head_camera/rgb" />
+        <arg name="image_topic" value="image_rect_color" />
+        <arg name="camera_frame" value="head_camera_rgb_optical_frame"/>
+    </include>
+</launch>
+

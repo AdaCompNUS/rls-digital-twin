@@ -1,0 +1,5 @@
+string name
+---
+Object3D[] objects
+Object2D[] objects2D
+#grasping_msgs/Object[] objects

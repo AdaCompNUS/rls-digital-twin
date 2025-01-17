@@ -1,0 +1,9 @@
+<launch>
+    <!-- <arg name="pc_topic_name" default="/kortex/camera/depth_registered/points"/> -->
+    <arg name="pc_topic_name" default="/kortex/camera/depth/points"/>
+
+    <node name="bbox_segmentor_kortex" pkg="bbox_segmentation_service" type="bbox_segmentation_srv.py" output="screen">
+        <param name="pc_topic" type="string" value="$(arg pc_topic_name)"/>
+        <param name="srv_namespace" type="string" value="kortex"/>
+    </node>
+</launch>

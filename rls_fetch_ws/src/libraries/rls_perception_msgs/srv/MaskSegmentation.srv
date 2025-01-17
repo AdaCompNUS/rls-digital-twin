@@ -1,0 +1,9 @@
+MaskIndice[] masks
+
+--- 
+
+Object3D[] objects
+#grasping_msgs/Object[] objects
+
+
+

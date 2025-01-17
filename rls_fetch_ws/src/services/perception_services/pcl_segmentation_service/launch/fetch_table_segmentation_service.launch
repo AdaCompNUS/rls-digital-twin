@@ -1,0 +1,6 @@
+<launch>
+    <node pkg="pcl_segmentation_service" name="table_segmentation" type="table_segmentation_node" output="screen">
+        <param name="cloud_in" value="/head_camera/depth_registered/points" />
+        <param name="service_name" value="rls_perception_services/fetch/table_segmentation_service" />
+    </node>
+</launch>

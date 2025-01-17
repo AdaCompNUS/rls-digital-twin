@@ -1,0 +1,5 @@
+std_msgs/Float64 dz 
+
+---
+
+std_msgs/Bool finish

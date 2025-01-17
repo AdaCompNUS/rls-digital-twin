@@ -1,0 +1,10 @@
+int8 GRIPPER_OPEN = 0
+int8 GRIPPER_CLOSE = 1
+
+int8 action
+
+float32 opening
+
+---
+
+bool success

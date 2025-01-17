@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<launch>
+	<node name="location_service" pkg="location_service" type="location_service.py" output="screen">
+	</node>
+</launch>

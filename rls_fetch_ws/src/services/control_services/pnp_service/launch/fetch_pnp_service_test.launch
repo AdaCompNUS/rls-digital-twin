@@ -1,0 +1,4 @@
+<launch>
+    <!-- pcl table segmentation -->
+    <node name="pcl_table_segmentor" pkg="pcl_segmentation_service" type="table_segmentation_node"/>
+</launch>

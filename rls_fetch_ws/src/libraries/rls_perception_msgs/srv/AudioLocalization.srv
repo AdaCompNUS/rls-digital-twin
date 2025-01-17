@@ -1,0 +1,6 @@
+string audio_string
+int32 quantity
+
+---
+
+int16 angle

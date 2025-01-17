@@ -1,0 +1,6 @@
+# value should be between 0.0 and 0.4 for movo
+float32 height
+
+---
+
+bool success

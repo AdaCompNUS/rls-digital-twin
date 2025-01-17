@@ -1,0 +1,5 @@
+std_msgs/String sentence
+
+---
+
+std_msgs/Bool result

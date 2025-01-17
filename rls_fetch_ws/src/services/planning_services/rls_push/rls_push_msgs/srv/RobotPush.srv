@@ -1,0 +1,17 @@
+#std_msgs/Bool request
+int16 PUSH_XY = 0
+int16 PUSH_WXY = 1
+int16 PUSH_TO_EDGE = 2
+
+int16 request
+
+# For PUSH_XY
+float32 dx
+float32 dy
+
+# For PUSH_WXY_ONLY
+float32 dw # unit in degree
+
+---
+
+bool success

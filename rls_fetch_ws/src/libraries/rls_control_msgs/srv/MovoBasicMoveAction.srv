@@ -1,0 +1,17 @@
+int8 MOVE_FORWARD = 0
+int8 MOVE_BACKWARD = 1
+int8 MOVE_LEFT = 2
+int8 MOVE_RIGHT = 3
+int8 ROTATE_CLOCKWISE = 4
+int8 ROTATE_ANTICLOCKWISE = 5
+
+int8 action # refer to macro defined above
+
+float32 data  # for 0 ~ 3 distance in meters
+              # for 4 ~ 5 degree in degree
+# float32 speed # for 0~3 m/s
+#               # for 4~5 degree/s
+
+---
+
+bool success

@@ -1,0 +1,5 @@
+int32 request
+
+---
+
+sensor_msgs/PointCloud2 cloud

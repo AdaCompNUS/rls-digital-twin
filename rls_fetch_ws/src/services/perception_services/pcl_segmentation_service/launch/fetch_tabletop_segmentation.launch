@@ -1,0 +1,19 @@
+<launch>
+
+<!-- node pkg="rls_push_vision" type="pcl_relay.py" name="pcl_replay" / -->
+<!-- arg name="combined_pcl_name" value="pointcloud_local" / -->
+
+<!-- <node pkg="tf" type="static_transform_publisher" name="left_out" args="-0.7 0.03 -0.25 -0.707 0 0 0.707  plane left_out 10 "/>
+<node pkg="tf" type="static_transform_publisher" name="left_edge" args="-0.7 0.02 -0.11 -0.707 0 0 0.707  plane left_edge 10 "/>
+<node pkg="tf" type="static_transform_publisher" name="right_edge" args="0 -1.0 0 0 0 0 1  left_edge right_edge 10 "/>
+<node pkg="tf" type="static_transform_publisher" name="left_in" args="0.6 0 0 0 0 0 1 left_out left_in 10" />
+<node pkg="tf" type="static_transform_publisher" name="right_out" args="0 -1.3 0 0 0 0 1 left_out right_out 10" />
+<node pkg="tf" type="static_transform_publisher" name="right_in" args="0.6 -1.3 0 0 0 0 1 left_out right_in 10" /> -->
+
+<arg name="combined_pcl_name" value="/head_camera/depth_registered/points"/>
+<include file="$(find pcl_segmentation_service)/launch/fetch_tabletop_segmentation_config.launch" >
+    <arg name="tabletop_segmentation_points_in" value="$(arg combined_pcl_name)" />
+</include
+
+</launch>
+

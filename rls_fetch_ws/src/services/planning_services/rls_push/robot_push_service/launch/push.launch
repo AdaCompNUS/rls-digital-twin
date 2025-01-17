@@ -1,0 +1,7 @@
+<launch>
+
+<node name="update_tf" pkg="rls_push_vision" type="robot_to_plane_tf.py" />
+
+<include file="$(find fetch_moveit_config)/launch/move_group.launch" />
+
+</launch>

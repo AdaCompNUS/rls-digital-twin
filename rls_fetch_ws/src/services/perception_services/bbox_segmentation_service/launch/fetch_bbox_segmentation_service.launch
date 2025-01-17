@@ -1,0 +1,9 @@
+<launch>
+    <arg name="pc_topic_name" default="/head_camera/depth_registered/points"/>
+
+    <node name="bbox_segmentor_fetch" pkg="bbox_segmentation_service" type="bbox_segmentation_srv.py" output="screen">
+        <param name="pc_topic" type="string" value="$(arg pc_topic_name)"/>
+        <param name="srv_namespace" type="string" value="fetch"/>
+    </node>
+</launch>
+

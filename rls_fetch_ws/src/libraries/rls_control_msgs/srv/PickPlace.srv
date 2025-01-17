@@ -1,0 +1,42 @@
+uint8 GET_READY = 0
+uint8 EXIT_READY_POSE = 2
+uint8 MOVE_ARM_TO_HOME = 3
+uint8 PICK = 4
+uint8 PLACE = 5
+uint8 POINT = 6
+uint8 EXECUTE_GRASP = 7
+
+# pick type
+uint8 TOP_PICK = 0
+uint8 SIDE_PICK = 1
+uint8 SIXDOF_PICK = 2
+
+# place type
+uint8 DROP = 0
+uint8 TOP_PLACE = 1
+
+uint8 action
+
+# for GET_READY
+float32 torso_height
+float32 table_camera_tilt
+float32 final_camera_tilt
+
+# for EXECUTE_GRASP
+moveit_msgs/Grasp grasp
+float32 gripper_opening
+
+## For PICK and POINT: object's center pose.
+uint8 pick_type
+rls_perception_msgs/Object3DV2 object # this defines position, orientation and gripper openning
+
+## For PLACE: place pose
+uint8 place_type
+geometry_msgs/PoseStamped target_pose
+
+## Common parameters
+# rls_perception_msgs/Object3D[] obstacles
+
+---
+
+bool success

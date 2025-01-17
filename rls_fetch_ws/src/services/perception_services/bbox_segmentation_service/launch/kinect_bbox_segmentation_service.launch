@@ -1,0 +1,10 @@
+<launch>
+    <!-- <arg name="pc_topic_name" default="/kortex/camera/depth_registered/points"/> -->
+    <arg name="pc_topic_name" default="/kinect2/qhd/points"/>
+
+    <node name="bbox_segmentor_kinect" pkg="bbox_segmentation_service" type="bbox_segmentation_srv.py" output="screen">
+        <param name="pc_topic" type="string" value="$(arg pc_topic_name)"/>
+        <param name="srv_namespace" type="string" value="kinect"/>
+    </node>
+</launch>
+

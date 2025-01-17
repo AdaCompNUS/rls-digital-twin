@@ -1,0 +1,11 @@
+int8 PAN_TILT = 0
+int8 LOOK_AROUND = 1
+
+int8 action
+
+float32 pan # in degrees
+float32 tilt # in degrees
+
+---
+
+bool success

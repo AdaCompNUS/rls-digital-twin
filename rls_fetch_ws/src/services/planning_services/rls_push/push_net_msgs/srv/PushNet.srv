@@ -1,0 +1,22 @@
+int8 SelectAction = 0
+int8 Update = 1
+
+int8 Action
+
+## Common
+sensor_msgs/Image image_cur
+sensor_msgs/Image image_goal
+
+## For SelectAction
+uint32[] action
+
+## For Update
+uint32[] best_start
+uint32[] best_end
+
+---
+
+bool res
+
+## For SelectAction
+string action_value

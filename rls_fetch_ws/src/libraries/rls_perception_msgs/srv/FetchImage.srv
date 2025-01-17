@@ -1,0 +1,10 @@
+int32 COLOUR_ONLY = 1
+int32 COLOUR_AND_DEPTH = 2
+
+int32 request
+
+---
+
+bool success
+sensor_msgs/Image color
+sensor_msgs/Image depth_image

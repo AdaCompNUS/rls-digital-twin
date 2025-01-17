@@ -1,0 +1,10 @@
+uint8 RESET = 0
+uint8 HAND_OVER = 1
+
+uint8 action
+
+pose human_hand_pose
+
+---
+
+bool success

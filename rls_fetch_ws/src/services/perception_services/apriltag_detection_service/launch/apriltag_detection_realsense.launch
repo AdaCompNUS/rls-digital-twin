@@ -1,0 +1,17 @@
+<launch>
+    <param name="apriltag_camera_frame" type="string" value="camera_color_optical_frame"/>
+
+    <include file="$(find realsense2_camera)/launch/rs_rgbd.launch">
+        <arg name="color_width" value="1920"/>
+        <arg name="color_height" value="1080"/>
+        <arg name="depth_width" value="1280"/>
+        <arg name="depth_height" value="720"/>
+    </include>
+
+    <include file="$(find apriltag_ros)/launch/continuous_detection.launch">
+        <arg name="camera_name" value="/camera/color" />
+        <arg name="image_topic" value="image_raw" />
+        <arg name="camera_frame" value="camera_color_optical_frame"/>
+        <arg name="node_namespace" value="realsense_apriltag_detection"/>
+    </include>
+</launch>

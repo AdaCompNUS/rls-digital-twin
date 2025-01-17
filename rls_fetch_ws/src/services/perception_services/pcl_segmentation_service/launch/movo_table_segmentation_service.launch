@@ -1,0 +1,6 @@
+<launch>
+    <node pkg="pcl_segmentation_service" name="table_segmentation" type="table_segmentation_node" output="screen">
+        <param name="cloud_in" value="/kinect2/qhd/points" />
+        <param name="service_name" value="rls_perception_services/movo/table_segmentation_service" />
+    </node>
+</launch>

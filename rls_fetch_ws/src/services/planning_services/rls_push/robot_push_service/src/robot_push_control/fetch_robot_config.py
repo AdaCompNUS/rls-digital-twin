@@ -1,0 +1,25 @@
+import fetch_api
+
+base_link = 'base_link'
+
+joint_names = [ 'shoulder_pan_joint', 'shoulder_lift_joint', 'upperarm_roll_joint', 'elbow_flex_joint', 'forearm_roll_joint', 'wrist_flex_joint', 'wrist_roll_joint']
+
+num = 7
+
+home_joints = [1.3205522228271485, 1.399532370159912, -0.19974325208511354, 1.719844644293213, 0.0004958728740930562, 1.6597035481201172, 0]
+hide_left_joints = [1.6051057506591797, -0.31507486860961914, -1.870631735609436, 1.4594510247558594, 1.305913609866333, 1.9208639218078614, 0.12701826548315048]
+hide_right_joints = [-1.5775209735839844, -0.3162254766723633, -1.2999910524353027, -1.4056417296081543, 1.8719528144638062, 1.804281051324463, -0.0056710773509049415]
+hold_left_joints = [1.4578436542541504, 0.6632214112976074, -3.108937661932373, 1.7045047929138184, -0.12797501921253204, 0.6196644856201172, 0.12011535471416473]
+hold_right_joints = [-1.5978461574523926, 0.8338766618469238, -0.0018597220308721064, -2.105903799310303, 3.11639491975708, 0.26339751021728514, -0.03673418978117943]
+
+#left_grasp_joints = [1.439435832598877, 1.0114346070983886, 0.2577665338054657, -1.2112094710021972, 1.35921935499115, -1.9819671557678222, -0.17594294244312286]
+
+left_grasp_joints = [1.405688159564209, 0.7851725145080566, -2.842791955755615, 0.8205478837341309, 1.3695737546722413, 1.9285338474975586, 0.017722130810091496]
+
+HOME_JOINTS = [(joint_names[i], home_joints[i]) for i in range(num)]
+HIDE_LEFT_JOINTS = [(joint_names[i], hide_left_joints[i]) for i in range(num)]
+HIDE_RIGHT_JOINTS = [(joint_names[i], hide_right_joints[i]) for i in range(num)]
+HOLD_LEFT_JOINTS = [(joint_names[i], hold_left_joints[i]) for i in range(num)]
+HOLD_RIGHT_JOINTS = [(joint_names[i], hold_right_joints[i]) for i in range(num)]
+LEFT_GRASP_JOINTS = [(joint_names[i], left_grasp_joints[i]) for i in range(num)]
+

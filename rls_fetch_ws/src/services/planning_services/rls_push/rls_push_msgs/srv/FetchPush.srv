@@ -1,0 +1,7 @@
+#std_msgs/Bool request
+int16 request ## 0: edge, 1: left, 2: right
+float32 distance ## how much to push
+
+---
+
+std_msgs/Bool result

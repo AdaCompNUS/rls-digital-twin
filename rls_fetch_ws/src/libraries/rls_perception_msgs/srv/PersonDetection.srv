@@ -1,0 +1,10 @@
+int32 START_DETECTION = 0
+int32 STOP_DETECTION = 1
+int32 REMEMBER_NEW_FACE = 2
+
+int32 action
+string person_name # only for REMEMBER_NEW_FACE
+
+---
+
+bool success
