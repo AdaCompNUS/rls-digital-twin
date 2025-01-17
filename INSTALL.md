@@ -119,7 +119,7 @@ Ensure you have the following installed or configured:
 11. **Build the ROS Digital Twin Workspace**:
 
    ```bash
-   cd ~/rls-digital-twin/rls_fetch_ws
+   cd {workspace}/rls-digital-twin/rls_fetch_ws
    rosdep install --from-paths src --ignore-src -r -y
    catkin_make
    echo "source $(pwd)/devel/setup.bash" >> ~/.bashrc
@@ -162,5 +162,6 @@ If you encounter any issues, check the following:
 - All ROS environment variables are properly set
 - All workspaces are properly sourced
 - Required models and meshes are in the correct locations
+- The ROS do not work well with conda. Please disable your conda environment before installing
 
 For additional help, consult the project's issue tracker or contact the [maintainers](tianrun@nus.edu.sg).
