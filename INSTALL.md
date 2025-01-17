@@ -75,11 +75,10 @@ Ensure you have the following installed or configured:
    git clone https://github.com/RobotIL-rls/robot_controllers.git
    ```
 
-7. **Build the Fetch Workspace**:
+7. **Build the Catkin Workspace**:
 
    ```bash
    cd ~/catkin_ws
-   source /opt/ros/noetic/setup.bash
    rosdep install --from-paths src --ignore-src -r -y
    catkin_make
    echo "source ~/catkin_ws/devel/setup.bash" >> ~/.bashrc
@@ -89,42 +88,43 @@ Ensure you have the following installed or configured:
 8. **Clone and Setup the Digital Twin Repository**:
 
    ```bash
+   # In anyplace you like
    git clone https://github.com/AdaCompNUS/rls-digital-twin.git
    cd rls-digital-twin
    ```
 
 9. **Download Required Models and Meshes**:
 
-    The meshes and models are stored in two locations:
+   The meshes and models are stored in two locations:
 
-    a. From nBox (requires NUS account):
-    [Download Link](https://nusu-my.sharepoint.com/:u:/g/personal/tianrun_nus_edu_sg/EYZGSOMYA59Phdb_twMSETkB09yb540NqVwjMgn9cR0jmQ)
+   a. From nBox (requires NUS account):
+   [Download Link](https://nusu-my.sharepoint.com/:u:/g/personal/tianrun_nus_edu_sg/EYZGSOMYA59Phdb_twMSETkB09yb540NqVwjMgn9cR0jmQ)
 
-    b. From Dropbox (requires NUS account):
-    [Download Link](https://www.dropbox.com/scl/fo/t07x7b0d9kts21gyi2d8y/AA9Aq2I6uk70rfKt75SZD1M?rlkey=bphh5xz01je5tdcokymkq33k8&st=xxydhhtu&dl=0)
+   b. From Dropbox (requires NUS account):
+   [Download Link](https://www.dropbox.com/scl/fo/t07x7b0d9kts21gyi2d8y/AA9Aq2I6uk70rfKt75SZD1M?rlkey=bphh5xz01je5tdcokymkq33k8&st=xxydhhtu&dl=0)
 
-    After downloading, place both `models` folders in:
+   After downloading, place both `models` folders in:
 
-    ```bash
-    {workspace}/rls-digital-twin/rls_fetch_ws/src/apps/low_level_planning
-    ```
+   ```bash
+   {workspace}/rls-digital-twin/rls_fetch_ws/src/apps/low_level_planning
+   ```
 
 10. **Install Python Dependencies**:
 
    ```bash
    python3 -m pip install --upgrade pip setuptools
-   pip install -e .
+   python3 -m pip install -e .
    ```
 
 11. **Build the ROS Digital Twin Workspace**:
 
-    ```bash
-    cd ~/rls-digital-twin/rls_fetch_ws
-    rosdep install --from-paths src --ignore-src -r -y
-    catkin_make
-    echo "source $(pwd)/devel/setup.bash" >> ~/.bashrc
-    source ~/.bashrc
-    ```
+   ```bash
+   cd ~/rls-digital-twin/rls_fetch_ws
+   rosdep install --from-paths src --ignore-src -r -y
+   catkin_make
+   echo "source $(pwd)/devel/setup.bash" >> ~/.bashrc
+   source ~/.bashrc
+   ```
 
 ## Virtual Machine Setup (For macOS and Windows Users)
 
