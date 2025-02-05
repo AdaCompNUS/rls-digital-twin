@@ -15,6 +15,14 @@ Ensure you have the following installed or configured:
 
 ### Environment Setup
 
+You can use the auto bash script to setup the environemtn:
+
+```bash
+bash setup.sh
+```
+
+Or do it manually:
+
 1. **Update and Install Required Packages**:
 
    ```bash
