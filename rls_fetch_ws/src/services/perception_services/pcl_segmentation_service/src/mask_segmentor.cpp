@@ -90,12 +90,12 @@ namespace pcl_segmentation_service
 
     public:
         //this is the constructor that takes in nodehandle as arg
-        MaskSegmentor(ros::NodeHandle n) 
+        MaskSegmentor(ros::NodeHandle n)
             : nh_(n)
         {
             first_time = true;
 
-            // get camera topic from ROS parameter server 
+            // get camera topic from ROS parameter server
             n.getParam("cemera_topic", camera_topic)
 
             coeff_ = pcl::ModelCoefficients::Ptr(new pcl::ModelCoefficients());

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys 
+import sys
 sys.path.remove("/opt/ros/kinetic/lib/python2.7/dist-packages")
 sys.path.append("/opt/ros/kinetic/lib/python2.7/dist-packages")
 
@@ -44,7 +44,7 @@ class ObjectDetectionService():
         # init ros service
         self._service = rospy.Service('rls_perception_services/object_detection_srv', DetectObjects, self._detect_objects)
         rospy.loginfo("object_detection_srv inited")
-    
+
     def _imgmsg_to_cv2(self, img_msg):
         dtype, n_channels = np.uint8, 3 # hard code
         dtype = np.dtype(dtype)

@@ -2,14 +2,14 @@
 <launch>
     <!-- Set environment variables -->
     <env name="GAZEBO_MODEL_PATH" value="$(find low_level_planning)/models"/>
-    
+
     <!-- Launch Gazebo with empty world -->
     <include file="$(find gazebo_ros)/launch/empty_world.launch">
         <arg name="verbose" value="true"/>
     </include>
 
     <!-- Spawn the environment model -->
-    <node name="spawn_environment" pkg="gazebo_ros" type="spawn_model" 
+    <node name="spawn_environment" pkg="gazebo_ros" type="spawn_model"
           output="screen" respawn="false"
           args="-file $(find low_level_planning)/models/environment.sdf -sdf -model environment"/>
 

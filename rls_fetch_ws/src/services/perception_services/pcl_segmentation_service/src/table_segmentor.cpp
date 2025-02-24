@@ -63,7 +63,7 @@ void apply_mask(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud,
 typedef enum TableSegmentorAction {
     GET_NEW_RESULT,
     USE_EXISTING_RESULT,
-    
+
     NUM_OF_ACTION
 } TableSegmentorActionType;
 
@@ -124,7 +124,7 @@ public:
         std::string service_name;
         if (ros::param::get("~service_name", service_name)) {
             mask_srv_ = nh_.advertiseService(service_name, &TableSegmentor::SegmentCallback, this);
-        } 
+        }
         else {
             ROS_ERROR("service_name param not found!!");
         }
@@ -166,14 +166,14 @@ private:
 
         // get raw point cloud
         sensor_msgs::PointCloud2ConstPtr orig_cloud = ros::topic::waitForMessage<sensor_msgs::PointCloud2>(
-                camera_topic, ros::Duration(3)); 
-          
-        //read point cloud multiple times due to weird intermittent bug where previous image is received 
+                camera_topic, ros::Duration(3));
+
+        //read point cloud multiple times due to weird intermittent bug where previous image is received
         // so it goes to locations from previous trial - could be due to network latency
         ros::Time t = ros::Time::now();
         do
         {
-            orig_cloud = ros::topic::waitForMessage<sensor_msgs::PointCloud2>(camera_topic, ros::Duration(9.0)); 
+            orig_cloud = ros::topic::waitForMessage<sensor_msgs::PointCloud2>(camera_topic, ros::Duration(9.0));
             ros::Duration(1/5.0).sleep();
             if ( ros::Time::now() - t > ros::Duration(15.0) ) //wait for at most 15s
             {
@@ -212,7 +212,7 @@ private:
           //cloud_down->points.resize(cloud_down->height * cloud_down->width);
 
           //std::cout<<cloud->height<<", "<<cloud->width<<std::endl;
-        
+
 
           // direction of push back point is from left to right along x axis in image plane then top to bottom along y axis
     //      for (int ii=0; ii<cloud->height; ii+=2)
@@ -221,34 +221,34 @@ private:
 
           //cloud_down->width = cloud->width / scale;
           //cloud_down->height = cloud->height / scale;
-        
+
             //std::cout<<"after downsample "<<cloud_down->height<<", "<<cloud_down->width<<std::endl;
           //for (int ii=0; ii<cloud_down->height * cloud_down->width; ii++)
          //         std::cout<<"after downsample "<<cloud_down->at(ii)<<std::endl;
           // get table info
         // perception::Segmenter segmenter(table_pub, above_table_pub, marker_pub, objPose_pub, objMarker_pub, table_marker_pub);
           //pcl::ModelCoefficients::Ptr coeff(new pcl::ModelCoefficients());
-          
+
         ROS_INFO("First time, segmenting table!");
         pcl::PointIndices::Ptr table_inliers(new pcl::PointIndices());
         // visualization_msgs::Marker table_marker;
         GetSurface(cloud, table_inliers, coeff_, mTableMarker);
         //segmenter.get_surface(cloud_down, table_inliers, coeff_);
         response.marker = mTableMarker;
-        
+
         first_time = false;
         return true;
     }
 
 
     bool GetSurface(PointCloudC::Ptr cloud_in, pcl::PointIndices::Ptr indices,
-                    pcl::ModelCoefficients::Ptr coeff, visualization_msgs::Marker& table_marker) 
+                    pcl::ModelCoefficients::Ptr coeff, visualization_msgs::Marker& table_marker)
     {
         PointCloudC::Ptr cloud(new PointCloudC());
         std::vector<int> index;
         pcl::removeNaNFromPointCloud(*cloud_in, *cloud, index);
         //std::cout<<"get_surface function shall only be called ONCE ..."<<std::endl;
-        pcl::PointIndices indices_internal; 
+        pcl::PointIndices indices_internal;
         pcl::SACSegmentation<PointC> seg;
         seg.setOptimizeCoefficients(true);
 
@@ -270,7 +270,7 @@ private:
         // Build custom indices that ignores points above the plane.
         double distance_above_plane;
         ros::param::param("distance_above_plane", distance_above_plane, 0.0); //in metres
-        for (size_t i = 0; i < cloud->size(); ++i) { 
+        for (size_t i = 0; i < cloud->size(); ++i) {
             const PointC& pt = cloud->points[i];
             float val = coeff->values[0] * pt.x + coeff->values[1] * pt.y +
                 coeff->values[2] * pt.z + coeff->values[3];
@@ -318,7 +318,7 @@ private:
     //  dimensions: The output dimensions, in meters.
     void GetAxisAlignedBoundingBox(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud,
                                    geometry_msgs::Pose* pose,
-                                   geometry_msgs::Vector3* dimensions) 
+                                   geometry_msgs::Vector3* dimensions)
     {
         Eigen::Vector4f min_pt, max_pt;
         pcl::getMinMax3D(*cloud, min_pt, max_pt);
@@ -337,7 +337,7 @@ private:
 }//perception namespace
 
 // this program is a node
-int main(int argc, char** argv) 
+int main(int argc, char** argv)
 {
     ros::init(argc, argv, "table_segmentor");
     ros::NodeHandle nh;

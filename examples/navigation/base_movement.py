@@ -4,6 +4,7 @@ import termios
 import rospy
 from fetch.fetch import Fetch
 
+
 def get_key():
     """Get a single keyboard press without requiring Enter."""
     fd = sys.stdin.fileno()
@@ -14,6 +15,7 @@ def get_key():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return ch
+
 
 def print_instructions():
     """Print keyboard control instructions."""
@@ -28,40 +30,42 @@ def print_instructions():
     print("Any other key - Stop")
     print("-------------------------")
 
+
 def main():
     # Initialize the Fetch robot
     robot = Fetch()
     print_instructions()
-    
+
     try:
         while not rospy.is_shutdown():
             key = get_key()
-            
-            if key == 'w':
+
+            if key == "w":
                 print("Moving forward...")
                 robot.move_base(0.5, 0.0)  # 50% forward speed
-            elif key == 's':
+            elif key == "s":
                 print("Moving backward...")
                 robot.move_base(-0.5, 0.0)  # 50% backward speed
-            elif key == 'a':
+            elif key == "a":
                 print("Turning left...")
                 robot.move_base(0.0, 0.5)  # 50% turn left speed
-            elif key == 'd':
+            elif key == "d":
                 print("Turning right...")
                 robot.move_base(0.0, -0.5)  # 50% turn right speed
-            elif key == 'q':
+            elif key == "q":
                 print("\nQuitting...")
                 break
             else:
                 robot.stop_base()
-            
+
             robot.rate.sleep()
-            
+
     except rospy.ROSInterruptException:
         pass
     finally:
         # Ensure the robot stops when the program ends
         robot.stop_base()
+
 
 if __name__ == "__main__":
     main()

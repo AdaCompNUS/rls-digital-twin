@@ -60,7 +60,7 @@ class MarkerGenerator {
   template <class PointCloudType>
   static visualization_msgs::Marker getCloudMarker(const PointCloudType& cloud);
   //! A marker showing where a fit model is believed to be
-  static visualization_msgs::Marker getFitMarker(const shape_msgs::Mesh &mesh, double rank);  
+  static visualization_msgs::Marker getFitMarker(const shape_msgs::Mesh &mesh, double rank);
   //! A marker showing where a convex hull table is
   static visualization_msgs::Marker getConvexHullTableMarker(const shape_msgs::Mesh &mesh);
   //! Create a generic Marker

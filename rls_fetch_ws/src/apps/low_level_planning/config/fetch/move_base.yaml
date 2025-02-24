@@ -27,5 +27,5 @@ conservative_reset:
 rotate_recovery:
   frequency: 20.0
   sim_granularity: 0.017
-aggressive_reset: 
+aggressive_reset:
   reset_distance: 0.5

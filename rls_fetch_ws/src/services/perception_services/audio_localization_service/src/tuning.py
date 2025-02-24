@@ -184,7 +184,7 @@ def main():
                 if name in PARAMETERS:
                     if len(sys.argv) > 2:
                         dev.write(name, sys.argv[2])
-                    
+
                     print('{}: {}'.format(name, dev.read(name)))
                 else:
                     print('{} is not a valid name'.format(name))

@@ -9,7 +9,7 @@
 <node pkg="tf" type="static_transform_publisher" name="right_out" args="0 -0.55 0 0 0 0 1 left_out right_out 10" />
 <node pkg="tf" type="static_transform_publisher" name="right_in" args="0.35 -0.55 0 0 0 0 1 left_out right_in 10" />
 
-    
+
     <!--arg name="combined_pcl_name" value="/head_camera/depth_registered/points" / -->
     <arg name="combined_pcl_name" value="pointcloud_local" />
 

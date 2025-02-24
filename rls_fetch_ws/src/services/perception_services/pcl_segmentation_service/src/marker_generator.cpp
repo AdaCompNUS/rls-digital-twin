@@ -100,19 +100,19 @@ visualization_msgs::Marker MarkerGenerator::getTableMarker(float xmin, float xma
   marker.points[0].x = xmin;
   marker.points[0].y = ymin;
   marker.points[0].z = 0;
-  
+
   marker.points[1].x = xmin;
   marker.points[1].y = ymax;
   marker.points[1].z = 0;
-  
+
   marker.points[2].x = xmax;
   marker.points[2].y = ymax;
   marker.points[2].z = 0;
-  
+
   marker.points[3].x = xmax;
   marker.points[3].y = ymin;
   marker.points[3].z = 0;
-  
+
   marker.points[4].x = xmin;
   marker.points[4].y = ymin;
   marker.points[4].z = 0;
@@ -121,7 +121,7 @@ visualization_msgs::Marker MarkerGenerator::getTableMarker(float xmin, float xma
   marker.points[5].x = xmin;
   marker.points[5].y = ymin;
   marker.points[5].z = 0.02;
-   
+
   marker.color.r = 1.0;
   marker.color.g = 1.0;
   marker.color.b = 0.0;
@@ -157,7 +157,7 @@ visualization_msgs::Marker MarkerGenerator::getConvexHullTableMarker(const shape
 }
 
 
-/*! Create a generic Marker 
+/*! Create a generic Marker
  */
 visualization_msgs::Marker MarkerGenerator::createMarker(std::string frame_id, double duration, double xdim, double ydim, double zdim,
 							 double r, double g, double b, int type, int id, std::string ns, geometry_msgs::Pose pose)

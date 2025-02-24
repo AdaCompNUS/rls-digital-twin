@@ -9,7 +9,7 @@ string corner_frame
 # The information for the plane that has been detected
 Table table
 
-# The raw clusters detected in the scan 
+# The raw clusters detected in the scan
 sensor_msgs/PointCloud2[] clusters
 int32[] indices
 visualization_msgs/Marker markers

@@ -71,7 +71,7 @@ catkin_python_setup()
 # generate_messages(
 #    DEPENDENCIES
 #    std_msgs
-#    #sensor_msgs 
+#    #sensor_msgs
 #    geometry_msgs
 # )
 

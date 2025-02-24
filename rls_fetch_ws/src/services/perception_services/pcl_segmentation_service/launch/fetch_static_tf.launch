@@ -8,7 +8,7 @@
 <node pkg="tf" type="static_transform_publisher" name="left_in" args="0.6 0 0 0 0 0 1 left_out left_in 10" />
 <node pkg="tf" type="static_transform_publisher" name="right_out" args="0 -1.3 0 0 0 0 1 left_out right_out 10" />
 <node pkg="tf" type="static_transform_publisher" name="right_in" args="0.6 -1.3 0 0 0 0 1 left_out right_in 10" />
-    
+
 
 </launch>
 

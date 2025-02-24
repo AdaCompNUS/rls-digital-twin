@@ -140,7 +140,7 @@ catkin_python_setup()
 ### Declare a C++ executable
 # add_executable(rls_segmentation_node src/tabletop_segmentation.cpp)
 # add_dependencies(rls_segmentation_node rls_push_msgs_generate_messages_cpp)
-# target_link_libraries(rls_segmentation_node 
+# target_link_libraries(rls_segmentation_node
 #     ${catkin_LIBRARIES}
 #     marker_generator
 #     )

@@ -59,7 +59,7 @@ def main():
 
     # while not rospy.is_shutdown():
     pose_thread.set_pose(pose)
-    
+
     raw_input('wait')
     arm.move_to_pose(pose, allowed_planning_time=5, plan_only=True, replan=True, execution_timeout=10)
     to_execute = raw_input('press y to execute')
@@ -97,7 +97,7 @@ class PoseThread(threading.Thread):
         self.pose = PoseStamped()
         self.to_exit = False
         self.lock = threading.Lock()
-    
+
     def run(self):
         to_exit = False
         while not to_exit:
@@ -106,11 +106,11 @@ class PoseThread(threading.Thread):
             to_exit = self.to_exit
             self.lock.release()
             rospy.sleep(0.1)
-    
+
     def set_pose(self, pose):
         with self.lock:
             self.pose = pose
-    
+
     def stop(self):
         with self.lock:
             self.to_exit = True
