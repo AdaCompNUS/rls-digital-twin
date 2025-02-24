@@ -1,6 +1,8 @@
 import rospy
 import numpy as np
+import vamp
 import actionlib
+from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist, PoseStamped
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryGoal, GripperCommandAction, GripperCommandGoal
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -16,7 +18,21 @@ class Fetch:
             rospy.init_node('fetch_controller', anonymous=True)
         except rospy.exceptions.ROSException:
             print("Node has already been initialized, do nothing")
+            
+        # Add joint states subscriber
+        self.joint_states = None
+        self.joint_state_subscriber = rospy.Subscriber(
+            "/joint_states",
+            JointState,
+            self._joint_states_callback
+        )
         
+        # Wait for first joint states message
+        rospy.loginfo("Waiting for joint states...")
+        while self.joint_states is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        rospy.loginfo("Received joint states")
+
         # Publisher for base movement commands
         self._base_publisher = rospy.Publisher(
             "/base_controller/command", 
@@ -51,6 +67,13 @@ class Fetch:
         )
         self.move_base_client.wait_for_server()
 
+        # End effector pose publisher
+        self.ee_pose_publisher = rospy.Publisher(
+            "/arm_controller/cartesian_pose_vel_controller/command",
+            PoseStamped,
+            queue_size=10
+        )
+        
         # Initialize torso action client
         self.torso_client = actionlib.SimpleActionClient(
             "torso_controller/follow_joint_trajectory",
@@ -58,15 +81,9 @@ class Fetch:
         )
         self.torso_client.wait_for_server()
 
-        # End effector pose publisher
-        self.ee_pose_publisher = rospy.Publisher(
-            "/arm_controller/cartesian_pose_vel_controller/command",
-            PoseStamped,
-            queue_size=10
-        )
-
-        # Define joint names
-        self.arm_joint_names = [
+        # Define joint names (8-DOF for planning)
+        self.planning_joint_names = [
+            "torso_lift_joint",      # First joint is torso
             "shoulder_pan_joint",
             "shoulder_lift_joint",
             "upperarm_roll_joint",
@@ -75,8 +92,223 @@ class Fetch:
             "wrist_flex_joint",
             "wrist_roll_joint"
         ]
+
+        # Initialize VAMP planner
+        self._init_vamp_planner()
+
+    def _joint_states_callback(self, msg):
+        """Callback for joint states messages."""
+        self.joint_states = msg
+
+    def _init_vamp_planner(self):
+        """Initialize VAMP motion planner with 8-DOF configuration."""
+        try:
+            self.vamp_module, self.planner_func, self.plan_settings, self.simp_settings = (
+                vamp.configure_robot_and_planner_with_kwargs(
+                    "fetch",
+                    "rrtc",
+                    sampler_name="halton",
+                    radius=0.0001
+                )
+            )
+            
+            self.sampler = self.vamp_module.halton()
+            self.sampler.skip(0)
+            
+            rospy.loginfo("VAMP planner initialized for 8-DOF planning")
+            
+        except Exception as e:
+            rospy.logerr(f"Failed to initialize VAMP planner: {str(e)}")
+            raise
+
+    def get_current_planning_joints(self):
+        """Get current joint positions for planning (8-DOF including torso)."""
+        if self.joint_states is None:
+            return None
+            
+        joint_dict = dict(zip(self.joint_states.name, self.joint_states.position))
         
-        self.torso_joint_names = ["torso_lift_joint"]
+        positions = []
+        for joint_name in self.planning_joint_names:
+            if joint_name in joint_dict:
+                positions.append(joint_dict[joint_name])
+            else:
+                rospy.logerr(f"Joint {joint_name} not found in joint states")
+                return None
+                
+        return positions
+
+    def _plan_path_with_vamp(self, current_joints, target_joints):
+        """Plan a path using VAMP motion planner for 8-DOF configuration."""
+        try:
+            current_joints = np.array(current_joints, dtype=np.float64)
+            target_joints = np.array(target_joints, dtype=np.float64)
+            
+            env = vamp.Environment()
+            
+            rospy.loginfo("Planning with VAMP (8-DOF):")
+            rospy.loginfo(f"Start config values: {current_joints}")
+            rospy.loginfo(f"Goal config values: {target_joints}")
+            
+            if len(current_joints) != 8 or len(target_joints) != 8:
+                rospy.logerr(f"Invalid joint dimensions. Expected 8, got {len(current_joints)} and {len(target_joints)}")
+                return None
+
+            result = self.planner_func(
+                current_joints,
+                target_joints,
+                env,
+                self.plan_settings,
+                self.sampler
+            )
+            
+            if result.solved:
+                rospy.loginfo("Path planning succeeded!")
+                
+                # Get planning statistics
+                simple = self.vamp_module.simplify(
+                    result.path,
+                    env,
+                    self.simp_settings,
+                    self.sampler
+                )
+                
+                stats = vamp.results_to_dict(result, simple)
+                rospy.loginfo(
+                    f"""Planning statistics:
+                    Planning Time: {stats['planning_time'].microseconds:8d}μs
+                    Simplify Time: {stats['simplification_time'].microseconds:8d}μs
+                    Total Time: {stats['total_time'].microseconds:8d}μs
+                    Planning Iters: {stats['planning_iterations']}
+                    Graph States: {stats['planning_graph_size']}
+                    Path Length:
+                        Initial: {stats['initial_path_cost']:5.3f}
+                        Simplified: {stats['simplified_path_cost']:5.3f}"""
+                )
+                
+                # Interpolate path
+                simple.path.interpolate(self.vamp_module.resolution())
+                
+                # Convert path to trajectory points
+                trajectory_points = []
+                for i in range(len(simple.path)):
+                    point = simple.path[i]
+                    if isinstance(point, list):
+                        trajectory_points.append(point)
+                    elif isinstance(point, np.ndarray):
+                        trajectory_points.append(point.tolist())
+                    else:
+                        trajectory_points.append(point.to_list())
+                
+                rospy.loginfo(f"Generated {len(trajectory_points)} trajectory points")
+                return trajectory_points
+                
+            else:
+                rospy.logwarn(f"Path planning failed. Iterations: {result.iterations}")
+                return None
+
+        except Exception as e:
+            rospy.logerr(f"VAMP planning error: {str(e)}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return None
+
+    def send_joint_values(self, target_joints, duration=5.0):
+        """
+        Move the arm and torso to specified joint positions using VAMP planning.
+        
+        Args:
+            target_joints: List of 8 joint positions [torso + 7 arm joints]
+            duration: Time to execute trajectory
+        """
+        try:
+            if len(target_joints) != 8:
+                raise ValueError("Expected 8 joint positions [torso + 7 arm joints]")
+
+            # Get current joints
+            current_joints = self.get_current_planning_joints()
+            if current_joints is None:
+                rospy.logerr("Failed to get current joint positions")
+                return None
+                
+            rospy.loginfo(f"Planning motion to target configuration: {target_joints}")
+            
+            # Plan path using VAMP
+            trajectory_points = self._plan_path_with_vamp(current_joints, target_joints)
+            
+            if trajectory_points is None:
+                rospy.logerr("Failed to plan path with VAMP")
+                return None
+
+            # Split trajectory points for torso and arm
+            torso_points = []  # First joint
+            arm_points = []    # Last 7 joints
+            
+            # Extract points for each controller
+            for point in trajectory_points:
+                torso_points.append([point[0]])  # First joint (torso)
+                arm_points.append(point[1:])     # Remaining joints (arm)
+
+            # Create torso trajectory
+            torso_goal = FollowJointTrajectoryGoal()
+            torso_goal.trajectory = JointTrajectory()
+            torso_goal.trajectory.joint_names = ["torso_lift_joint"]
+
+            # Create arm trajectory
+            arm_goal = FollowJointTrajectoryGoal()
+            arm_goal.trajectory = JointTrajectory()
+            arm_goal.trajectory.joint_names = [
+                "shoulder_pan_joint",
+                "shoulder_lift_joint",
+                "upperarm_roll_joint",
+                "elbow_flex_joint",
+                "forearm_roll_joint",
+                "wrist_flex_joint",
+                "wrist_roll_joint"
+            ]
+
+            # Add trajectory points
+            point_duration = duration / len(trajectory_points)
+            for i in range(len(trajectory_points)):
+                # Torso trajectory point
+                torso_point = JointTrajectoryPoint()
+                torso_point.positions = torso_points[i]
+                torso_point.velocities = [0.0]
+                torso_point.accelerations = [0.0]
+                torso_point.time_from_start = rospy.Duration(point_duration * (i + 1))
+                torso_goal.trajectory.points.append(torso_point)
+
+                # Arm trajectory point
+                arm_point = JointTrajectoryPoint()
+                arm_point.positions = arm_points[i]
+                arm_point.velocities = [0.0] * 7
+                arm_point.accelerations = [0.0] * 7
+                arm_point.time_from_start = rospy.Duration(point_duration * (i + 1))
+                arm_goal.trajectory.points.append(arm_point)
+
+            # Execute trajectories
+            rospy.loginfo(f"Executing trajectory with {len(trajectory_points)} points...")
+            
+            # Send goals to both controllers
+            self.torso_client.send_goal(torso_goal)
+            self.arm_traj_client.send_goal(arm_goal)
+            
+            # Wait for completion
+            torso_success = self.torso_client.wait_for_result(rospy.Duration(duration + 5.0))
+            arm_success = self.arm_traj_client.wait_for_result(rospy.Duration(duration + 5.0))
+            
+            if torso_success and arm_success:
+                rospy.loginfo("Trajectory execution completed successfully")
+                return self.arm_traj_client.get_result()
+            else:
+                rospy.logwarn("Trajectory execution failed or timed out")
+                return None
+
+        except Exception as e:
+            rospy.logerr(f"Error in send_joint_values: {str(e)}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return None
 
     def move_base(self, linear_x, angular_z):
         """
@@ -130,56 +362,6 @@ class Fetch:
         self.move_base_client.wait_for_result()
         
         return self.move_base_client.get_result()
-
-    def send_joint_values(self, joint_positions, duration=5.0):
-        """
-        Move the arm to specified joint positions.
-        
-        Args:
-            joint_positions (list): List of 7 joint angles in radians
-            duration (float): Time to execute the movement in seconds
-        """
-        if len(joint_positions) != 7:
-            raise ValueError("Expected 7 joint positions")
-            
-        goal = FollowJointTrajectoryGoal()
-        goal.trajectory = JointTrajectory()
-        goal.trajectory.joint_names = self.arm_joint_names
-        
-        point = JointTrajectoryPoint()
-        point.positions = joint_positions
-        point.time_from_start = rospy.Duration(duration)
-        goal.trajectory.points.append(point)
-        
-        self.arm_traj_client.send_goal(goal)
-        self.arm_traj_client.wait_for_result()
-        
-        return self.arm_traj_client.get_result()
-
-    def set_torso_height(self, height, duration=5.0):
-        """
-        Set the torso height.
-        
-        Args:
-            height (float): Target height in meters (0.0 to 0.4)
-            duration (float): Time to execute the movement in seconds
-        """
-        # Clip height to safe range
-        height = np.clip(height, 0.0, 0.4)
-        
-        goal = FollowJointTrajectoryGoal()
-        goal.trajectory = JointTrajectory()
-        goal.trajectory.joint_names = self.torso_joint_names
-        
-        point = JointTrajectoryPoint()
-        point.positions = [height]
-        point.time_from_start = rospy.Duration(duration)
-        goal.trajectory.points.append(point)
-        
-        self.torso_client.send_goal(goal)
-        self.torso_client.wait_for_result()
-        
-        return self.torso_client.get_result()
 
     def send_end_effector_pose(self, position, orientation):
         """
