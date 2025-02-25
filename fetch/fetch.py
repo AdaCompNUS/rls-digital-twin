@@ -13,6 +13,10 @@ from control_msgs.msg import (
 )
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+import tf2_ros
+import tf2_geometry_msgs
+import time
+import open3d as o3d
 
 
 class Fetch:
@@ -80,6 +84,10 @@ class Fetch:
             "torso_controller/follow_joint_trajectory", FollowJointTrajectoryAction
         )
         self.torso_client.wait_for_server()
+
+        # Add TF2 buffer and listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         # Define joint names (8-DOF for planning)
         self.planning_joint_names = [
@@ -356,21 +364,60 @@ class Fetch:
             rospy.logerr(f"Failed to add cylinder constraint: {str(e)}")
 
     def add_pointcloud(
-        self, points, samples_per_object=10000, filter_radius=0.02, filter_cull=True
+        self,
+        pcd_path,
+        frame_id="world",
+        samples_per_object=10000,
+        filter_radius=0.02,
+        filter_cull=True,
     ):
         """
-        Add a pointcloud as collision constraint.
+        Add a pointcloud as collision constraint with proper coordinate frame transformation.
 
         Args:
-            points: Nx3 array of points
+            pcd_path: Path to the point cloud file (.ply, .pcd)
+            frame_id: The frame ID that the point cloud is defined in
             samples_per_object: Number of samples per object for pointcloud
             filter_radius: Filter radius for pointcloud filtering
-            filter_cull: Whether to cull pointcloud around robot by maximum distance
+            filter_cull: Whether to cull pointcloud around robot
+
+        Returns:
+            float: Time taken to process and add the point cloud
         """
+        start_time = time.time()
+        rospy.loginfo(f"Loading point cloud from {pcd_path}...")
+
         try:
+            # Load the point cloud using Open3D
+            pcd = o3d.io.read_point_cloud(pcd_path)
+            points = np.asarray(pcd.points)
+
+            rospy.loginfo(f"Loaded {len(points)} points from {pcd_path}")
+
+            # Check if transformation is needed
+            if frame_id != "base_link":
+                rospy.loginfo(f"Transforming points from {frame_id} to base_link...")
+
+                # Wait for transform to be available
+                try:
+                    self.tf_buffer.lookup_transform(
+                        "base_link", frame_id, rospy.Time(0), rospy.Duration(5.0)
+                    )
+                    points = self._transform_points(points, frame_id, "base_link")
+                except (
+                    tf2_ros.LookupException,
+                    tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException,
+                ) as e:
+                    rospy.logerr(f"Transform lookup failed: {e}")
+                    return -1
+
+            # Use VAMP to process the point cloud for collision checking
             from vamp import pointcloud as vpc
 
-            # Process pointcloud
+            rospy.loginfo(f"Processing {len(points)} points for collision checking...")
+
+            # Process point cloud
             (
                 new_env,
                 original_pc,
@@ -385,20 +432,77 @@ class Fetch:
                 filter_cull,
             )
 
+            # Add point cloud objects to environment
+            for obj in new_env.objects():
+                self.env.add_object(obj)
+
+            processing_time = time.time() - start_time
+
             rospy.loginfo(
                 f"""Pointcloud processing stats:
                 Original size: {len(original_pc)}
                 Filtered size: {len(filtered_pc)}
                 Filter time: {filter_time * 1e-6:.3f}ms
-                Build time: {build_time * 1e-6:.3f}ms"""
+                Build time: {build_time * 1e-6:.3f}ms
+                Total processing time: {processing_time:.3f}s"""
             )
 
-            # Add pointcloud environment to existing environment
-            for obj in new_env.objects():
-                self.env.add_object(obj)
+            return processing_time
 
         except Exception as e:
-            rospy.logerr(f"Failed to add pointcloud constraint: {str(e)}")
+            rospy.logerr(f"Failed to add pointcloud: {str(e)}")
+            import traceback
+
+            rospy.logerr(traceback.format_exc())
+            return -1
+
+    def _transform_points(self, points, source_frame, target_frame):
+        """
+        Transform a set of points from source frame to target frame.
+
+        Args:
+            points: Nx3 array of points
+            source_frame: Source frame ID
+            target_frame: Target frame ID
+
+        Returns:
+            Nx3 array of transformed points
+        """
+        transformed_points = []
+
+        # Create stamped point for each point and transform
+        for point in points:
+            p = tf2_geometry_msgs.PointStamped()
+            p.header.frame_id = source_frame
+            p.header.stamp = rospy.Time(0)
+            p.point.x = point[0]
+            p.point.y = point[1]
+            p.point.z = point[2]
+
+            try:
+                # Transform the point
+                transformed_p = self.tf_buffer.transform(
+                    p, target_frame, rospy.Duration(0.1)
+                )
+
+                # Add transformed point to list
+                transformed_points.append(
+                    [
+                        transformed_p.point.x,
+                        transformed_p.point.y,
+                        transformed_p.point.z,
+                    ]
+                )
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ) as e:
+                # Continue with other points if a single transform fails
+                rospy.logwarn(f"Transform failed for point {point}: {e}")
+                continue
+
+        return np.array(transformed_points)
 
     def send_joint_values(self, target_joints, duration=5.0):
         """

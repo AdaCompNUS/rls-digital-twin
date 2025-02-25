@@ -25,4 +25,6 @@
         <arg name="move_base_include" value="$(find low_level_planning)/launch/include/move_base.launch.xml"/>
         <arg name="amcl_include" value="$(find low_level_planning)/launch/include/amcl.launch.xml"/>
     </include>
+
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find low_level_planning)/rviz/robot_rls_demo.rviz" output="screen"/>
 </launch>
