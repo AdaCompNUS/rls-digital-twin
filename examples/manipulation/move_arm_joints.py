@@ -1,44 +1,27 @@
 #!/usr/bin/env python3
 import rospy
-import random
 from fetch.fetch import Fetch
 
 
-def generate_random_constraints(robot):
+def generate_constraints(robot):
     """Generate random geometric constraints"""
     # Random sphere
-    sphere_pos = [
-        random.uniform(0.2, 0.6),  # x
-        random.uniform(-0.3, 0.3),  # y
-        random.uniform(0.2, 0.8),  # z
-    ]
-    sphere_radius = random.uniform(0.05, 0.15)
+    sphere_pos = [0.4, 0, 0.6]
+    sphere_radius = 0.1
     robot.add_sphere(sphere_pos, sphere_radius)
     print(f"Added sphere at {sphere_pos} with radius {sphere_radius}")
 
     # Random box
-    box_pos = [
-        random.uniform(0.2, 0.4),  # x
-        random.uniform(0.3, 0.6),  # y
-        random.uniform(0.3, 0.7),  # z
-    ]
-    box_dims = [
-        random.uniform(0.1, 0.2),  # length
-        random.uniform(0.1, 0.2),  # width
-        random.uniform(0.2, 0.4),  # height
-    ]
+    box_pos = [0, 0.8, 0.4]
+    box_dims = [0.1, 0.2, 0.3]
     box_orientation = [0, 0, 1]  # No rotation for simplicity
     robot.add_box(box_pos, box_dims, box_orientation)
     print(f"Added box at {box_pos} with dimensions {box_dims}")
 
     # Random cylinder
-    cylinder_pos = [
-        random.uniform(-0.4, -0.2),  # x
-        random.uniform(0.3, 0.6),  # y
-        random.uniform(0.2, 0.6),  # z
-    ]
-    cylinder_radius = random.uniform(0.05, 0.08)
-    cylinder_height = random.uniform(0.2, 0.4)
+    cylinder_pos = [-0.5, 0.3, 0.6]
+    cylinder_radius = 0.06
+    cylinder_height = 0.03
     cylinder_orientation = [0, 0, 1]  # No rotation for simplicity
     robot.add_cylinder(
         cylinder_pos, cylinder_radius, cylinder_height, cylinder_orientation
@@ -55,7 +38,7 @@ def main():
     try:
         # Add random constraints
         print("Adding random geometric constraints...")
-        generate_random_constraints(robot)
+        generate_constraints(robot)
 
         # Target configuration (8-DOF)
         # [torso, shoulder_pan, shoulder_lift, upperarm_roll, elbow_flex, forearm_roll, wrist_flex, wrist_roll]

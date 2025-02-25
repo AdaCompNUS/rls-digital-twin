@@ -257,6 +257,78 @@ class Fetch:
         except Exception as e:
             rospy.logerr(f"Failed to add box constraint: {str(e)}")
 
+    def add_capsule(
+        self,
+        center=None,
+        endpoint1=None,
+        endpoint2=None,
+        radius=None,
+        length=None,
+        orientation_euler_xyz=None,
+        name=None,
+    ):
+        """
+        Add a capsule constraint to the environment.
+
+        This method supports two ways of defining a capsule:
+        1. Using center, orientation, radius, and length
+        2. Using two endpoints and radius
+
+        Args:
+            center: [x, y, z] center position (for center-based definition)
+            endpoint1: [x, y, z] first endpoint (for endpoint-based definition)
+            endpoint2: [x, y, z] second endpoint (for endpoint-based definition)
+            radius: capsule radius
+            length: capsule length (for center-based definition)
+            orientation_euler_xyz: [roll, pitch, yaw] orientation in radians (for center-based definition)
+            name: optional name for the capsule
+        """
+        try:
+            # Check which capsule definition method to use
+            if (
+                center is not None
+                and orientation_euler_xyz is not None
+                and radius is not None
+                and length is not None
+            ):
+                # Method 1: Using center, orientation, radius, and length
+                center = list(center)  # Convert to list to ensure correct type
+                orientation_euler_xyz = list(orientation_euler_xyz)
+
+                capsule = vamp.Capsule(center, orientation_euler_xyz, radius, length)
+                rospy.loginfo(
+                    f"Added capsule constraint at {center} with radius {radius} and length {length}"
+                )
+
+            elif endpoint1 is not None and endpoint2 is not None and radius is not None:
+                # Method 2: Using two endpoints and radius
+                endpoint1 = list(endpoint1)  # Convert to list to ensure correct type
+                endpoint2 = list(endpoint2)
+
+                capsule = vamp.Capsule(endpoint1, endpoint2, radius)
+                rospy.loginfo(
+                    f"Added capsule constraint from {endpoint1} to {endpoint2} with radius {radius}"
+                )
+
+            else:
+                rospy.logerr(
+                    "Invalid parameters for add_capsule. Use either center+orientation+radius+length or endpoint1+endpoint2+radius"
+                )
+                return
+
+            # Set name if provided
+            if name:
+                capsule.name = name
+
+            # Add capsule to environment
+            self.env.add_capsule(capsule)
+
+        except Exception as e:
+            rospy.logerr(f"Failed to add capsule constraint: {str(e)}")
+            import traceback
+
+            rospy.logerr(traceback.format_exc())
+
     def add_cylinder(self, position, radius, length, orientation_euler_xyz, name=None):
         """
         Add a cylinder constraint to the environment.
