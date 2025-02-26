@@ -16,7 +16,6 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import tf2_geometry_msgs
 import time
-import open3d as o3d
 
 
 class Fetch:
@@ -109,22 +108,37 @@ class Fetch:
         self.joint_states = msg
 
     def _init_vamp_planner(self):
-        """Initialize VAMP motion planner with 8-DOF configuration."""
+        """
+        Initialize VAMP motion planner with 8-DOF configuration and collision settings.
+
+        This function sets up the planning environment and configures the motion planner
+        with appropriate parameters for collision avoidance.
+        """
         try:
+            # Create a new environment
             self.env = vamp.Environment()
+
+            # Configure robot and planner with custom settings
             (
                 self.vamp_module,
                 self.planner_func,
                 self.plan_settings,
                 self.simp_settings,
             ) = vamp.configure_robot_and_planner_with_kwargs(
-                "fetch", "rrtc", sampler_name="halton", radius=0.0001
+                "fetch",  # Robot name
+                "rrtc",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
+                sampler_name="halton",  # Use Halton sampler for better coverage
+                radius=0.0001,  # Connection radius
+                max_iters=5000,  # Maximum planning iterations
+                timeout_us=3000000,  # Timeout in microseconds (3 seconds)
+                collision_check_res=0.01,  # Collision checking resolution
             )
 
+            # Initialize the sampler
             self.sampler = self.vamp_module.halton()
-            self.sampler.skip(0)
+            self.sampler.skip(0)  # Skip initial samples if needed
 
-            rospy.loginfo("VAMP planner initialized for 8-DOF planning")
+            rospy.loginfo("VAMP planner initialized with collision avoidance settings")
 
         except Exception as e:
             rospy.logerr(f"Failed to initialize VAMP planner: {str(e)}")
@@ -364,36 +378,24 @@ class Fetch:
             rospy.logerr(f"Failed to add cylinder constraint: {str(e)}")
 
     def add_pointcloud(
-        self,
-        pcd_path,
-        frame_id="world",
-        samples_per_object=10000,
-        filter_radius=0.02,
-        filter_cull=True,
+        self, points, frame_id="map", filter_radius=0.02, filter_cull=True
     ):
         """
-        Add a pointcloud as collision constraint with proper coordinate frame transformation.
+        Add a pointcloud as collision constraint from already loaded point data.
 
         Args:
-            pcd_path: Path to the point cloud file (.ply, .pcd)
+            points: List of [x,y,z] points or numpy array of shape (N,3)
             frame_id: The frame ID that the point cloud is defined in
-            samples_per_object: Number of samples per object for pointcloud
             filter_radius: Filter radius for pointcloud filtering
             filter_cull: Whether to cull pointcloud around robot
 
         Returns:
-            float: Time taken to process and add the point cloud
+            float: Time taken to process and add the point cloud or -1 if error
         """
         start_time = time.time()
-        rospy.loginfo(f"Loading point cloud from {pcd_path}...")
+        rospy.loginfo(f"Processing point cloud with {len(points)} points...")
 
         try:
-            # Load the point cloud using Open3D
-            pcd = o3d.io.read_point_cloud(pcd_path)
-            points = np.asarray(pcd.points)
-
-            rospy.loginfo(f"Loaded {len(points)} points from {pcd_path}")
-
             # Check if transformation is needed
             if frame_id != "base_link":
                 rospy.loginfo(f"Transforming points from {frame_id} to base_link...")
@@ -404,6 +406,12 @@ class Fetch:
                         "base_link", frame_id, rospy.Time(0), rospy.Duration(5.0)
                     )
                     points = self._transform_points(points, frame_id, "base_link")
+
+                    # Check if transformation was successful
+                    if len(points) == 0:
+                        rospy.logerr("Transformation resulted in zero points")
+                        return -1
+
                 except (
                     tf2_ros.LookupException,
                     tf2_ros.ConnectivityException,
@@ -412,42 +420,74 @@ class Fetch:
                     rospy.logerr(f"Transform lookup failed: {e}")
                     return -1
 
-            # Use VAMP to process the point cloud for collision checking
-            from vamp import pointcloud as vpc
-
+            # Process point cloud for collision avoidance
             rospy.loginfo(f"Processing {len(points)} points for collision checking...")
 
-            # Process point cloud
-            (
-                new_env,
-                original_pc,
-                filtered_pc,
-                filter_time,
-                build_time,
-            ) = vpc.points_to_pointcloud(
-                "fetch",  # Robot name
-                points,
-                samples_per_object,
+            # Get robot-specific parameters
+            filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
+            filter_cull_radius = 1.4  # Default max reach radius for Fetch
+
+            # Define bounding box for filtering
+            bbox_lo = np.array(filter_origin) - filter_cull_radius
+            bbox_hi = np.array(filter_origin) + filter_cull_radius
+
+            # Filter the point cloud
+            filtered_pc, filter_time = self._filter_pointcloud(
+                points.tolist() if isinstance(points, np.ndarray) else points,
                 filter_radius,
+                filter_cull_radius,
+                filter_origin,
+                bbox_lo,
+                bbox_hi,
                 filter_cull,
             )
 
-            # Add point cloud objects to environment
-            for obj in new_env.objects():
-                self.env.add_object(obj)
+            # Check if filtering was successful
+            if len(filtered_pc) == 0:
+                rospy.logwarn(
+                    "Filtering resulted in zero points, using simple sphere obstacle instead"
+                )
+                # Add a simple sphere as a fallback
+                sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
+                sphere.name = "fallback_obstacle"
+                self.env.add_sphere(sphere)
+                processing_time = time.time() - start_time
+                return processing_time
 
-            processing_time = time.time() - start_time
+            # Define robot-specific radius parameters
+            r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
+            point_radius = 0.01  # Default point radius for collision checking
 
-            rospy.loginfo(
-                f"""Pointcloud processing stats:
-                Original size: {len(original_pc)}
-                Filtered size: {len(filtered_pc)}
-                Filter time: {filter_time * 1e-6:.3f}ms
-                Build time: {build_time * 1e-6:.3f}ms
-                Total processing time: {processing_time:.3f}s"""
-            )
+            # Add the filtered point cloud to the environment
+            try:
+                build_time = self.env.add_pointcloud(
+                    filtered_pc, r_min, r_max, point_radius
+                )
 
-            return processing_time
+                processing_time = time.time() - start_time
+
+                rospy.loginfo(
+                    f"""Pointcloud processing stats:
+                    Original size: {len(points)}
+                    Filtered size: {len(filtered_pc)}
+                    Filter time: {filter_time * 1e-6:.3f}ms
+                    Build time: {build_time * 1e-6:.3f}ms
+                    Total processing time: {processing_time:.3f}s"""
+                )
+
+                return processing_time
+
+            except Exception as e:
+                rospy.logerr(f"Failed to add point cloud to environment: {e}")
+                # Add a simple obstacle as fallback
+                rospy.logwarn("Adding fallback obstacles instead")
+                self.add_box(
+                    position=[0.5, 0.0, 0.5],
+                    half_extents=[0.2, 0.2, 0.2],
+                    orientation_euler_xyz=[0, 0, 0],
+                    name="fallback_obstacle",
+                )
+                return -1
 
         except Exception as e:
             rospy.logerr(f"Failed to add pointcloud: {str(e)}")
@@ -456,51 +496,203 @@ class Fetch:
             rospy.logerr(traceback.format_exc())
             return -1
 
+    def _filter_pointcloud(
+        self,
+        points,
+        filter_radius,
+        filter_cull_radius,
+        filter_origin,
+        bbox_lo,
+        bbox_hi,
+        filter_cull=True,
+    ):
+        """
+        Filter point cloud to remove redundant points and apply culling if needed.
+
+        Args:
+            points: List of 3D points
+            filter_radius: Radius to filter nearby points
+            filter_cull_radius: Maximum distance from origin to keep points
+            filter_origin: Origin point for distance calculations
+            bbox_lo: Lower corner of bounding box
+            bbox_hi: Upper corner of bounding box
+            filter_cull: Whether to apply distance-based culling
+
+        Returns:
+            tuple: (filtered_points, filter_time_microseconds)
+        """
+        start_time = time.time()
+
+        try:
+            # Convert to numpy array if it's not already
+            points_np = (
+                np.array(points, dtype=np.float64)
+                if not isinstance(points, np.ndarray)
+                else points.astype(np.float64)
+            )
+
+            # Make sure points are valid
+            if points_np.size == 0 or points_np.shape[1] != 3:
+                rospy.logwarn(f"Invalid point cloud shape: {points_np.shape}")
+                return [], int((time.time() - start_time) * 1e6)
+
+            # Handle potential NaN or infinite values
+            mask = np.isfinite(points_np).all(axis=1)
+            points_np = points_np[mask]
+
+            # Manually downsample instead of using Open3D's voxel_down_sample
+            # Create a voxel grid
+            voxel_indices = np.floor(points_np / filter_radius).astype(int)
+
+            # Use a dictionary to keep track of points per voxel
+            voxel_dict = {}
+            for i, idx in enumerate(voxel_indices):
+                idx_tuple = tuple(idx)
+                if idx_tuple not in voxel_dict:
+                    voxel_dict[idx_tuple] = i
+
+            # Get indices of downsampled points
+            downsampled_indices = list(voxel_dict.values())
+            points_filtered = points_np[downsampled_indices]
+
+            # If culling is enabled, remove points outside the robot's reach
+            if filter_cull and len(points_filtered) > 0:
+                # Keep points within bounding box
+                origin = np.array(filter_origin)
+
+                mask_x = (points_filtered[:, 0] >= bbox_lo[0]) & (
+                    points_filtered[:, 0] <= bbox_hi[0]
+                )
+                mask_y = (points_filtered[:, 1] >= bbox_lo[1]) & (
+                    points_filtered[:, 1] <= bbox_hi[1]
+                )
+                mask_z = (points_filtered[:, 2] >= bbox_lo[2]) & (
+                    points_filtered[:, 2] <= bbox_hi[2]
+                )
+                mask_bbox = mask_x & mask_y & mask_z
+
+                # Apply distance-based filtering
+                distances = np.linalg.norm(points_filtered - origin, axis=1)
+                mask_distance = distances <= filter_cull_radius
+
+                # Combine masks
+                mask = mask_bbox & mask_distance
+                points_filtered = points_filtered[mask]
+
+            rospy.loginfo(
+                f"Filtered point cloud from {len(points_np)} to {len(points_filtered)} points"
+            )
+
+            filter_time = int(
+                (time.time() - start_time) * 1e6
+            )  # Convert to microseconds
+            return points_filtered.tolist(), filter_time
+
+        except Exception as e:
+            rospy.logerr(f"Error in point cloud filtering: {str(e)}")
+            import traceback
+
+            rospy.logerr(traceback.format_exc())
+            return [], int((time.time() - start_time) * 1e6)
+
     def _transform_points(self, points, source_frame, target_frame):
         """
-        Transform a set of points from source frame to target frame.
+        Transform a set of points from source frame to target frame using TF2.
+
+        This function handles transformations between different coordinate frames:
+        - world: The global coordinate system (used by point clouds)
+        - map: The SLAM-generated map coordinate system
+        - base_link: The robot's base coordinate system (used for motion planning)
 
         Args:
             points: Nx3 array of points
-            source_frame: Source frame ID
-            target_frame: Target frame ID
+            source_frame: Source frame ID (e.g., "world", "map")
+            target_frame: Target frame ID (e.g., "base_link")
 
         Returns:
             Nx3 array of transformed points
         """
         transformed_points = []
 
-        # Create stamped point for each point and transform
-        for point in points:
-            p = tf2_geometry_msgs.PointStamped()
-            p.header.frame_id = source_frame
-            p.header.stamp = rospy.Time(0)
-            p.point.x = point[0]
-            p.point.y = point[1]
-            p.point.z = point[2]
+        # Log transformation details
+        rospy.loginfo(
+            f"Transforming {len(points)} points from '{source_frame}' to '{target_frame}'"
+        )
 
-            try:
-                # Transform the point
-                transformed_p = self.tf_buffer.transform(
-                    p, target_frame, rospy.Duration(0.1)
+        # Get the latest transform
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                target_frame, source_frame, rospy.Time(0), rospy.Duration(5.0)
+            )
+            rospy.loginfo(f"Found transform from '{source_frame}' to '{target_frame}'")
+
+            # Log transform information for debugging
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            rospy.loginfo(
+                f"Translation: [{translation.x}, {translation.y}, {translation.z}]"
+            )
+            rospy.loginfo(
+                f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]"
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as e:
+            rospy.logerr(f"Failed to lookup transform: {e}")
+            return points  # Return original points if transform fails
+
+        # Batch processing to improve performance
+        batch_size = 1000  # Process points in batches
+        num_batches = (len(points) + batch_size - 1) // batch_size
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(points))
+            batch_points = points[start_idx:end_idx]
+
+            batch_transformed = []
+            for point in batch_points:
+                p = tf2_geometry_msgs.PointStamped()
+                p.header.frame_id = source_frame
+                p.header.stamp = rospy.Time(0)
+                p.point.x = float(point[0])
+                p.point.y = float(point[1])
+                p.point.z = float(point[2])
+
+                try:
+                    # Apply the transformation
+                    transformed_p = self.tf_buffer.transform(
+                        p, target_frame, rospy.Duration(0.1)
+                    )
+                    batch_transformed.append(
+                        [
+                            transformed_p.point.x,
+                            transformed_p.point.y,
+                            transformed_p.point.z,
+                        ]
+                    )
+                except (
+                    tf2_ros.LookupException,
+                    tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException,
+                ) as e:
+                    rospy.logwarn(f"Transform failed for point {point}: {e}")
+                    # Skip this point
+                    continue
+
+            transformed_points.extend(batch_transformed)
+
+            # Log progress for large point clouds
+            if num_batches > 1:
+                rospy.loginfo(
+                    f"Transformed batch {batch_idx+1}/{num_batches} ({len(batch_transformed)} points)"
                 )
 
-                # Add transformed point to list
-                transformed_points.append(
-                    [
-                        transformed_p.point.x,
-                        transformed_p.point.y,
-                        transformed_p.point.z,
-                    ]
-                )
-            except (
-                tf2_ros.LookupException,
-                tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException,
-            ) as e:
-                # Continue with other points if a single transform fails
-                rospy.logwarn(f"Transform failed for point {point}: {e}")
-                continue
+        rospy.loginfo(
+            f"Successfully transformed {len(transformed_points)} out of {len(points)} points"
+        )
 
         return np.array(transformed_points)
 
