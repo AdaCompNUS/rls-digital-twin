@@ -6,6 +6,31 @@ import open3d as o3d
 import os
 from fetch.fetch import Fetch
 
+target_test = "table"
+
+test_cases = {
+    "workstation": {
+        "position": [-2.7782226013936215, 0.15580237473099096, 0.0],
+        "orientation": [0.0, 0.0, -0.6538142154802868, 0.7566551206698445],
+    },
+    "table": {
+        "position": [-1.423818315402027, 1.6089515294782506, 0.0],
+        "orientation": [0.0, 0.0, 0.9999908525888619, 0.004277234924690651],
+    },
+    "open_kitchen": {
+        "position": [-1.9369315883259304, -2.2616069367536142, 0.0],
+        "orientation": [0.0, 0.0, -0.7056717966949518, 0.7085388594490203],
+    },
+    "coffee_table": {
+        "position": [3.9634266041991695, 0.9449825671950015, 0.0],
+        "orientation": [0.0, 0.0, -0.71349853502434, 0.7006567208827164],
+    },
+    "sofa": {
+        "position": [2.098556770716819, 1.1490546885248516, 0.0],
+        "orientation": [0.0, 0.0, -0.690454382206587, 0.7233759369039866],
+    },
+}
+
 
 def load_pointcloud(pcd_path):
     """
@@ -130,8 +155,9 @@ def main():
         # STEP 1: Navigate to the specified pose
         print("\n=== Step 1: Navigating to target position ===")
         # Target pose from your example
-        position = [-2.7782226013936215, 0.15580237473099096, 0.0]
-        orientation = [0.0, 0.0, -0.6538142154802868, 0.7566551206698445]
+        position = test_cases[target_test]["position"]
+        orientation = test_cases[target_test]["orientation"]
+
         print(f"Target position: {position}")
         print(f"Target orientation: {orientation}")
 
@@ -146,11 +172,9 @@ def main():
         print(f"Navigation completed in {nav_time:.2f} seconds")
 
         # STEP 2: Load the point cloud for collision checking
-        print(
-            "\n=== Step 2: Loading workstation point cloud for collision avoidance ==="
-        )
+        print("\n=== Step 2: Loading point cloud for collision avoidance ===")
         # Path to point cloud
-        pcd_path = "mp_collision_models/workstation.ply"
+        pcd_path = f"mp_collision_models/{target_test}.ply"
 
         # Load point cloud data from file - this is now done in the test script
         pc_load_start_time = time.time()
