@@ -125,12 +125,12 @@ class Fetch:
                 self.simp_settings,
             ) = vamp.configure_robot_and_planner_with_kwargs(
                 "fetch",  # Robot name
-                "prm",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
+                "rrtc",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
                 sampler_name="halton",  # Use Halton sampler for better coverage
-                radius=0.0001,  # Connection radius
-                max_iters=5000,  # Maximum planning iterations
-                timeout_us=3000000,  # Timeout in microseconds (3 seconds)
-                collision_check_res=0.01,  # Collision checking resolution
+                # radius=0.0001,  # Connection radius
+                # max_iters=5000,  # Maximum planning iterations
+                # timeout_us=3000000,  # Timeout in microseconds (3 seconds)
+                # collision_check_res=0.01,  # Collision checking resolution
             )
 
             # Initialize the sampler
@@ -377,7 +377,12 @@ class Fetch:
             rospy.logerr(f"Failed to add cylinder constraint: {str(e)}")
 
     def add_pointcloud(
-        self, points, frame_id="map", filter_radius=0.02, filter_cull=False, enable_filtering=False
+        self,
+        points,
+        frame_id="map",
+        filter_radius=0.02,
+        filter_cull=False,
+        enable_filtering=False,
     ):
         """
         Add a pointcloud as collision constraint from already loaded point data.
@@ -397,7 +402,7 @@ class Fetch:
 
         start_time = time()
         rospy.loginfo(f"Processing point cloud with {len(points)} points...")
-        
+
         if not enable_filtering:
             rospy.loginfo("Point cloud filtering is DISABLED")
 
@@ -405,7 +410,7 @@ class Fetch:
             # Convert to numpy array if not already
             if not isinstance(points, np.ndarray):
                 points = np.array(points, dtype=np.float64)
-                
+
             # Check if transformation is needed
             if frame_id != "base_link":
                 rospy.loginfo(f"Transforming points from {frame_id} to base_link...")
@@ -435,7 +440,9 @@ class Fetch:
 
             # Determine whether to apply filtering
             if enable_filtering:
-                rospy.loginfo(f"Processing {len(points)} points for collision checking...")
+                rospy.loginfo(
+                    f"Processing {len(points)} points for collision checking..."
+                )
 
                 # Get robot-specific parameters
                 filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
@@ -455,9 +462,9 @@ class Fetch:
                     bbox_hi,
                     filter_cull,
                 )
-                
+
                 filter_time = filter_time_us / 1e6  # Convert to seconds
-                
+
                 # Check if filtering was successful
                 if len(filtered_pc) == 0:
                     rospy.logwarn(
@@ -469,7 +476,7 @@ class Fetch:
                     self.env.add_sphere(sphere)
                     processing_time = time() - start_time
                     return processing_time
-                    
+
                 points_to_use = filtered_pc
                 rospy.loginfo(f"Using {len(points_to_use)} filtered points")
             else:
@@ -487,7 +494,7 @@ class Fetch:
                 # Ensure points are in list format for vamp
                 if isinstance(points_to_use, np.ndarray):
                     points_to_use = points_to_use.tolist()
-                    
+
                 add_start_time = time()
                 build_time = self.env.add_pointcloud(
                     points_to_use, r_min, r_max, point_radius
@@ -535,6 +542,7 @@ class Fetch:
         except Exception as e:
             rospy.logerr(f"Failed to add pointcloud: {str(e)}")
             import traceback
+
             rospy.logerr(traceback.format_exc())
             return -1
 
@@ -640,106 +648,123 @@ class Fetch:
     def _transform_points(self, points, source_frame, target_frame):
         """
         Transform a set of points from source frame to target frame using NumPy vectorization.
-        
+
         This optimized version replaces the point-by-point TF2 transformation with a much faster
         vectorized matrix operation that processes all points at once.
-        
+
         Args:
             points: Nx3 array or list of points
             source_frame: Source frame ID (e.g., "world", "map")
             target_frame: Target frame ID (e.g., "base_link")
-            
+
         Returns:
             Nx3 array of transformed points
         """
         import numpy as np
         from time import time
-        
+
         start_time = time()
-        
+
         # Convert points to numpy array if not already
         if not isinstance(points, np.ndarray):
             points = np.array(points, dtype=np.float64)
-        
+
         # Handle empty input
         if points.size == 0:
             return points
-        
+
         # Log transformation details
-        rospy.loginfo(f"Fast transforming {len(points)} points from '{source_frame}' to '{target_frame}'")
-        
+        rospy.loginfo(
+            f"Fast transforming {len(points)} points from '{source_frame}' to '{target_frame}'"
+        )
+
         try:
             # Get the latest transform
             transform = self.tf_buffer.lookup_transform(
                 target_frame, source_frame, rospy.Time(0), rospy.Duration(5.0)
             )
-            
+
             # Extract translation and rotation from transform
             translation = transform.transform.translation
             rotation = transform.transform.rotation
-            
+
             # Log transform information for debugging
-            rospy.loginfo(f"Translation: [{translation.x}, {translation.y}, {translation.z}]")
-            rospy.loginfo(f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]")
-            
+            rospy.loginfo(
+                f"Translation: [{translation.x}, {translation.y}, {translation.z}]"
+            )
+            rospy.loginfo(
+                f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]"
+            )
+
             # Convert quaternion to rotation matrix (more efficient than individual transforms)
             x, y, z, w = rotation.x, rotation.y, rotation.z, rotation.w
-            
+
             # Precompute common terms to optimize the calculation
-            xx, xy, xz = x*x, x*y, x*z
-            yy, yz, zz = y*y, y*z, z*z
-            wx, wy, wz = w*x, w*y, w*z
-            
+            xx, xy, xz = x * x, x * y, x * z
+            yy, yz, zz = y * y, y * z, z * z
+            wx, wy, wz = w * x, w * y, w * z
+
             # Build rotation matrix
-            rot_matrix = np.array([
-                [1 - 2*(yy + zz), 2*(xy - wz), 2*(xz + wy)],
-                [2*(xy + wz), 1 - 2*(xx + zz), 2*(yz - wx)],
-                [2*(xz - wy), 2*(yz + wx), 1 - 2*(xx + yy)]
-            ], dtype=np.float64)
-            
+            rot_matrix = np.array(
+                [
+                    [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+                    [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+                    [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
+                ],
+                dtype=np.float64,
+            )
+
             # Create translation vector
-            trans_vector = np.array([
-                translation.x, translation.y, translation.z
-            ], dtype=np.float64)
-            
+            trans_vector = np.array(
+                [translation.x, translation.y, translation.z], dtype=np.float64
+            )
+
             # Process points in chunks to avoid memory issues with very large point clouds
             chunk_size = 500000  # Adjust based on available memory
             n_points = len(points)
             num_chunks = int(np.ceil(n_points / chunk_size))
             result = np.zeros_like(points)
-            
+
             for i in range(num_chunks):
                 start_idx = i * chunk_size
                 end_idx = min((i + 1) * chunk_size, n_points)
-                
+
                 # Get current chunk
                 chunk = points[start_idx:end_idx]
-                
+
                 # Apply transformation to chunk: R * points + t
                 result[start_idx:end_idx] = np.dot(chunk, rot_matrix.T) + trans_vector
-                
+
                 # Log progress for large point clouds
                 if num_chunks > 1 and (i % 10 == 0 or i == num_chunks - 1):
                     points_processed = end_idx
                     percentage = (points_processed / n_points) * 100
                     elapsed = time() - start_time
                     rate = points_processed / elapsed if elapsed > 0 else 0
-                    rospy.loginfo(f"Transformed {points_processed}/{n_points} points ({percentage:.1f}%), "
-                                f"Rate: {rate:.1f} points/sec")
-            
+                    rospy.loginfo(
+                        f"Transformed {points_processed}/{n_points} points ({percentage:.1f}%), "
+                        f"Rate: {rate:.1f} points/sec"
+                    )
+
             total_time = time() - start_time
-            rospy.loginfo(f"Transformation complete: {n_points} points in {total_time:.3f} seconds "
-                        f"({n_points/total_time:.1f} points/sec)")
-            
+            rospy.loginfo(
+                f"Transformation complete: {n_points} points in {total_time:.3f} seconds "
+                f"({n_points/total_time:.1f} points/sec)"
+            )
+
             return result
-            
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
-                tf2_ros.ExtrapolationException) as e:
+
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as e:
             rospy.logerr(f"Failed to lookup transform: {e}")
             return points  # Return original points if transform fails
         except Exception as e:
             rospy.logerr(f"Error in point transformation: {str(e)}")
             import traceback
+
             rospy.logerr(traceback.format_exc())
             return points  # Return original points on error
 

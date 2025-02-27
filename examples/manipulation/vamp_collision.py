@@ -16,7 +16,7 @@ pcd_files = [
     "sofa.ply",
     "table.ply",
     "wall.ply",
-    "workstation.ply"
+    "workstation.ply",
 ]
 
 test_cases = {
@@ -189,55 +189,63 @@ def main():
 
         # STEP 2: Load all point clouds for collision checking
         print("\n=== Step 2: Loading multiple point clouds for collision avoidance ===")
-        
+
         # Track total points and loading time
         total_points = 0
         pc_load_start_time = time.time()
-        
+
         # We'll combine all point clouds into one for processing
         combined_points = None
-        
+
         for pcd_file in pcd_files:
             # Path to point cloud
             pcd_path = f"mp_collision_models/{pcd_file}"
-            
+
             # Load point cloud data from file
             point_cloud_data = load_pointcloud(pcd_path)
-            
+
             if point_cloud_data is not None:
                 # Keep track of total points
                 total_points += len(point_cloud_data)
-                
+
                 # Add to combined point cloud
                 if combined_points is None:
                     combined_points = point_cloud_data
                 else:
                     combined_points = np.vstack((combined_points, point_cloud_data))
-        
+
         pc_load_time = time.time() - pc_load_start_time
-        
+
         if combined_points is None or len(combined_points) == 0:
-            print("Failed to load any point clouds. Proceeding without collision model.")
+            print(
+                "Failed to load any point clouds. Proceeding without collision model."
+            )
             pc_time = pc_load_time
         else:
-            print(f"All point clouds loaded in {pc_load_time:.2f} seconds with a total of {len(combined_points)} points")
-            
+            print(
+                f"All point clouds loaded in {pc_load_time:.2f} seconds with a total of {len(combined_points)} points"
+            )
+
             # Process the combined point cloud data
             pc_process_start_time = time.time()
-            result = robot.add_pointcloud(
-                combined_points, frame_id="map"
-            )
+            result = robot.add_pointcloud(combined_points, frame_id="map")
             pc_process_time = time.time() - pc_process_start_time
-            
+
             if result < 0:
-                print("Failed to process combined point cloud. Proceeding without collision model.")
+                print(
+                    "Failed to process combined point cloud. Proceeding without collision model."
+                )
                 pc_time = pc_load_time
             else:
-                print(f"Combined point cloud processed in {pc_process_time:.2f} seconds")
+                print(
+                    f"Combined point cloud processed in {pc_process_time:.2f} seconds"
+                )
                 pc_time = pc_load_time + pc_process_time
 
         # STEP 3: Plan and execute the arm motion with collision avoidance
-        print("\n=== Step 3: Planning and executing arm motion with collision avoidance ===")
+        print(
+            "\n=== Step 3: Planning and executing arm motion with collision avoidance ==="
+        )
 
         # Target arm joint configuration with torso included as first joint
         torso_height = 0.37
@@ -266,7 +274,9 @@ def main():
         motion_time = time.time() - planning_start_time
 
         if result is not None:
-            print(f"Motion planning and execution completed in {motion_time:.2f} seconds")
+            print(
+                f"Motion planning and execution completed in {motion_time:.2f} seconds"
+            )
 
             # Final status
             print("\n=== Task Summary ===")
@@ -274,8 +284,12 @@ def main():
             print(f"Navigation time: {nav_time:.2f} seconds")
             print(f"Point cloud processing time: {pc_time:.2f} seconds")
             print(f"Motion planning and execution time: {motion_time:.2f} seconds")
-            print(f"Total time: {initial_motion_time + nav_time + pc_time + motion_time:.2f} seconds")
-            print(f"Total points loaded from {len(pcd_files)} point clouds: {total_points}")
+            print(
+                f"Total time: {initial_motion_time + nav_time + pc_time + motion_time:.2f} seconds"
+            )
+            print(
+                f"Total points loaded from {len(pcd_files)} point clouds: {total_points}"
+            )
             print("\nTask completed successfully!")
         else:
             print("Motion planning or execution failed!")
