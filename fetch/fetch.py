@@ -378,7 +378,7 @@ class Fetch:
             rospy.logerr(f"Failed to add cylinder constraint: {str(e)}")
 
     def add_pointcloud(
-        self, points, frame_id="map", filter_radius=0.02, filter_cull=True
+        self, points, frame_id="map", filter_radius=0.02, filter_cull=False, enable_filtering=False
     ):
         """
         Add a pointcloud as collision constraint from already loaded point data.
@@ -386,16 +386,27 @@ class Fetch:
         Args:
             points: List of [x,y,z] points or numpy array of shape (N,3)
             frame_id: The frame ID that the point cloud is defined in
-            filter_radius: Filter radius for pointcloud filtering
-            filter_cull: Whether to cull pointcloud around robot
+            filter_radius: Filter radius for pointcloud filtering (used only if enable_filtering=True)
+            filter_cull: Whether to cull pointcloud around robot (used only if enable_filtering=True)
+            enable_filtering: Whether to enable point cloud filtering (default: False)
 
         Returns:
             float: Time taken to process and add the point cloud or -1 if error
         """
-        start_time = time.time()
+        import numpy as np
+        from time import time
+
+        start_time = time()
         rospy.loginfo(f"Processing point cloud with {len(points)} points...")
+        
+        if not enable_filtering:
+            rospy.loginfo("Point cloud filtering is DISABLED")
 
         try:
+            # Convert to numpy array if not already
+            if not isinstance(points, np.ndarray):
+                points = np.array(points, dtype=np.float64)
+                
             # Check if transformation is needed
             if frame_id != "base_link":
                 rospy.loginfo(f"Transforming points from {frame_id} to base_link...")
@@ -420,39 +431,53 @@ class Fetch:
                     rospy.logerr(f"Transform lookup failed: {e}")
                     return -1
 
-            # Process point cloud for collision avoidance
-            rospy.loginfo(f"Processing {len(points)} points for collision checking...")
+            transform_time = time() - start_time
+            rospy.loginfo(f"Transformation completed in {transform_time:.3f} seconds")
 
-            # Get robot-specific parameters
-            filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
-            filter_cull_radius = 1.4  # Default max reach radius for Fetch
+            # Determine whether to apply filtering
+            if enable_filtering:
+                rospy.loginfo(f"Processing {len(points)} points for collision checking...")
 
-            # Define bounding box for filtering
-            bbox_lo = np.array(filter_origin) - filter_cull_radius
-            bbox_hi = np.array(filter_origin) + filter_cull_radius
+                # Get robot-specific parameters
+                filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
+                filter_cull_radius = 1.4  # Default max reach radius for Fetch
 
-            # Filter the point cloud
-            filtered_pc, filter_time = self._filter_pointcloud(
-                points.tolist() if isinstance(points, np.ndarray) else points,
-                filter_radius,
-                filter_cull_radius,
-                filter_origin,
-                bbox_lo,
-                bbox_hi,
-                filter_cull,
-            )
+                # Define bounding box for filtering
+                bbox_lo = np.array(filter_origin) - filter_cull_radius
+                bbox_hi = np.array(filter_origin) + filter_cull_radius
 
-            # Check if filtering was successful
-            if len(filtered_pc) == 0:
-                rospy.logwarn(
-                    "Filtering resulted in zero points, using simple sphere obstacle instead"
+                # Filter the point cloud
+                filtered_pc, filter_time_us = self._filter_pointcloud(
+                    points,
+                    filter_radius,
+                    filter_cull_radius,
+                    filter_origin,
+                    bbox_lo,
+                    bbox_hi,
+                    filter_cull,
                 )
-                # Add a simple sphere as a fallback
-                sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
-                sphere.name = "fallback_obstacle"
-                self.env.add_sphere(sphere)
-                processing_time = time.time() - start_time
-                return processing_time
+                
+                filter_time = filter_time_us / 1e6  # Convert to seconds
+                
+                # Check if filtering was successful
+                if len(filtered_pc) == 0:
+                    rospy.logwarn(
+                        "Filtering resulted in zero points, using simple sphere obstacle instead"
+                    )
+                    # Add a simple sphere as a fallback
+                    sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
+                    sphere.name = "fallback_obstacle"
+                    self.env.add_sphere(sphere)
+                    processing_time = time() - start_time
+                    return processing_time
+                    
+                points_to_use = filtered_pc
+                rospy.loginfo(f"Using {len(points_to_use)} filtered points")
+            else:
+                # Skip filtering
+                points_to_use = points
+                filter_time = 0
+                rospy.loginfo(f"Using all {len(points_to_use)} points (no filtering)")
 
             # Define robot-specific radius parameters
             r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
@@ -460,20 +485,39 @@ class Fetch:
 
             # Add the filtered point cloud to the environment
             try:
+                # Ensure points are in list format for vamp
+                if isinstance(points_to_use, np.ndarray):
+                    points_to_use = points_to_use.tolist()
+                    
+                add_start_time = time()
                 build_time = self.env.add_pointcloud(
-                    filtered_pc, r_min, r_max, point_radius
+                    points_to_use, r_min, r_max, point_radius
                 )
+                add_time = time() - add_start_time
 
-                processing_time = time.time() - start_time
+                processing_time = time() - start_time
 
-                rospy.loginfo(
-                    f"""Pointcloud processing stats:
-                    Original size: {len(points)}
-                    Filtered size: {len(filtered_pc)}
-                    Filter time: {filter_time * 1e-6:.3f}ms
-                    Build time: {build_time * 1e-6:.3f}ms
-                    Total processing time: {processing_time:.3f}s"""
-                )
+                if enable_filtering:
+                    rospy.loginfo(
+                        f"""Pointcloud processing stats:
+                        Original size: {len(points)}
+                        Filtered size: {len(points_to_use)}
+                        Transform time: {transform_time:.3f}s
+                        Filter time: {filter_time:.3f}s
+                        Build time: {build_time * 1e-6:.3f}s
+                        Add time: {add_time:.3f}s
+                        Total processing time: {processing_time:.3f}s"""
+                    )
+                else:
+                    rospy.loginfo(
+                        f"""Pointcloud processing stats (NO FILTERING):
+                        Points processed: {len(points)}
+                        Transform time: {transform_time:.3f}s
+                        Build time: {build_time * 1e-6:.3f}s
+                        Add time: {add_time:.3f}s
+                        Total processing time: {processing_time:.3f}s
+                        Processing rate: {len(points) / processing_time:.1f} points/sec"""
+                    )
 
                 return processing_time
 
@@ -492,7 +536,6 @@ class Fetch:
         except Exception as e:
             rospy.logerr(f"Failed to add pointcloud: {str(e)}")
             import traceback
-
             rospy.logerr(traceback.format_exc())
             return -1
 
@@ -597,104 +640,109 @@ class Fetch:
 
     def _transform_points(self, points, source_frame, target_frame):
         """
-        Transform a set of points from source frame to target frame using TF2.
-
-        This function handles transformations between different coordinate frames:
-        - world: The global coordinate system (used by point clouds)
-        - map: The SLAM-generated map coordinate system
-        - base_link: The robot's base coordinate system (used for motion planning)
-
+        Transform a set of points from source frame to target frame using NumPy vectorization.
+        
+        This optimized version replaces the point-by-point TF2 transformation with a much faster
+        vectorized matrix operation that processes all points at once.
+        
         Args:
-            points: Nx3 array of points
+            points: Nx3 array or list of points
             source_frame: Source frame ID (e.g., "world", "map")
             target_frame: Target frame ID (e.g., "base_link")
-
+            
         Returns:
             Nx3 array of transformed points
         """
-        transformed_points = []
-
+        import numpy as np
+        from time import time
+        
+        start_time = time()
+        
+        # Convert points to numpy array if not already
+        if not isinstance(points, np.ndarray):
+            points = np.array(points, dtype=np.float64)
+        
+        # Handle empty input
+        if points.size == 0:
+            return points
+        
         # Log transformation details
-        rospy.loginfo(
-            f"Transforming {len(points)} points from '{source_frame}' to '{target_frame}'"
-        )
-
-        # Get the latest transform
+        rospy.loginfo(f"Fast transforming {len(points)} points from '{source_frame}' to '{target_frame}'")
+        
         try:
+            # Get the latest transform
             transform = self.tf_buffer.lookup_transform(
                 target_frame, source_frame, rospy.Time(0), rospy.Duration(5.0)
             )
-            rospy.loginfo(f"Found transform from '{source_frame}' to '{target_frame}'")
-
-            # Log transform information for debugging
+            
+            # Extract translation and rotation from transform
             translation = transform.transform.translation
             rotation = transform.transform.rotation
-            rospy.loginfo(
-                f"Translation: [{translation.x}, {translation.y}, {translation.z}]"
-            )
-            rospy.loginfo(
-                f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]"
-            )
-        except (
-            tf2_ros.LookupException,
-            tf2_ros.ConnectivityException,
-            tf2_ros.ExtrapolationException,
-        ) as e:
+            
+            # Log transform information for debugging
+            rospy.loginfo(f"Translation: [{translation.x}, {translation.y}, {translation.z}]")
+            rospy.loginfo(f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]")
+            
+            # Convert quaternion to rotation matrix (more efficient than individual transforms)
+            x, y, z, w = rotation.x, rotation.y, rotation.z, rotation.w
+            
+            # Precompute common terms to optimize the calculation
+            xx, xy, xz = x*x, x*y, x*z
+            yy, yz, zz = y*y, y*z, z*z
+            wx, wy, wz = w*x, w*y, w*z
+            
+            # Build rotation matrix
+            rot_matrix = np.array([
+                [1 - 2*(yy + zz), 2*(xy - wz), 2*(xz + wy)],
+                [2*(xy + wz), 1 - 2*(xx + zz), 2*(yz - wx)],
+                [2*(xz - wy), 2*(yz + wx), 1 - 2*(xx + yy)]
+            ], dtype=np.float64)
+            
+            # Create translation vector
+            trans_vector = np.array([
+                translation.x, translation.y, translation.z
+            ], dtype=np.float64)
+            
+            # Process points in chunks to avoid memory issues with very large point clouds
+            chunk_size = 500000  # Adjust based on available memory
+            n_points = len(points)
+            num_chunks = int(np.ceil(n_points / chunk_size))
+            result = np.zeros_like(points)
+            
+            for i in range(num_chunks):
+                start_idx = i * chunk_size
+                end_idx = min((i + 1) * chunk_size, n_points)
+                
+                # Get current chunk
+                chunk = points[start_idx:end_idx]
+                
+                # Apply transformation to chunk: R * points + t
+                result[start_idx:end_idx] = np.dot(chunk, rot_matrix.T) + trans_vector
+                
+                # Log progress for large point clouds
+                if num_chunks > 1 and (i % 10 == 0 or i == num_chunks - 1):
+                    points_processed = end_idx
+                    percentage = (points_processed / n_points) * 100
+                    elapsed = time() - start_time
+                    rate = points_processed / elapsed if elapsed > 0 else 0
+                    rospy.loginfo(f"Transformed {points_processed}/{n_points} points ({percentage:.1f}%), "
+                                f"Rate: {rate:.1f} points/sec")
+            
+            total_time = time() - start_time
+            rospy.loginfo(f"Transformation complete: {n_points} points in {total_time:.3f} seconds "
+                        f"({n_points/total_time:.1f} points/sec)")
+            
+            return result
+            
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
+                tf2_ros.ExtrapolationException) as e:
             rospy.logerr(f"Failed to lookup transform: {e}")
             return points  # Return original points if transform fails
-
-        # Batch processing to improve performance
-        batch_size = 1000  # Process points in batches
-        num_batches = (len(points) + batch_size - 1) // batch_size
-
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(points))
-            batch_points = points[start_idx:end_idx]
-
-            batch_transformed = []
-            for point in batch_points:
-                p = tf2_geometry_msgs.PointStamped()
-                p.header.frame_id = source_frame
-                p.header.stamp = rospy.Time(0)
-                p.point.x = float(point[0])
-                p.point.y = float(point[1])
-                p.point.z = float(point[2])
-
-                try:
-                    # Apply the transformation
-                    transformed_p = self.tf_buffer.transform(
-                        p, target_frame, rospy.Duration(0.1)
-                    )
-                    batch_transformed.append(
-                        [
-                            transformed_p.point.x,
-                            transformed_p.point.y,
-                            transformed_p.point.z,
-                        ]
-                    )
-                except (
-                    tf2_ros.LookupException,
-                    tf2_ros.ConnectivityException,
-                    tf2_ros.ExtrapolationException,
-                ) as e:
-                    rospy.logwarn(f"Transform failed for point {point}: {e}")
-                    # Skip this point
-                    continue
-
-            transformed_points.extend(batch_transformed)
-
-            # Log progress for large point clouds
-            if num_batches > 1:
-                rospy.loginfo(
-                    f"Transformed batch {batch_idx+1}/{num_batches} ({len(batch_transformed)} points)"
-                )
-
-        rospy.loginfo(
-            f"Successfully transformed {len(transformed_points)} out of {len(points)} points"
-        )
-
-        return np.array(transformed_points)
+        except Exception as e:
+            rospy.logerr(f"Error in point transformation: {str(e)}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return points  # Return original points on error
 
     def send_joint_values(self, target_joints, duration=5.0):
         """

@@ -6,26 +6,42 @@ import open3d as o3d
 import os
 from fetch.fetch import Fetch
 
-target_test = "table"
+target_test = "workstation"
+
+# List of all PCD files to load
+pcd_files = [
+    "coffee_table.ply",
+    "open_kitchen.ply",
+    "rls2.ply",
+    "sofa.ply",
+    "table.ply",
+    "wall.ply",
+    "workstation.ply"
+]
 
 test_cases = {
     "workstation": {
+        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [-2.7782226013936215, 0.15580237473099096, 0.0],
         "orientation": [0.0, 0.0, -0.6538142154802868, 0.7566551206698445],
     },
     "table": {
-        "position": [-1.423818315402027, 1.6089515294782506, 0.0],
+        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "position": [-1.4217454107706076, 1.458057698007385, 0.0],
         "orientation": [0.0, 0.0, 0.9999908525888619, 0.004277234924690651],
     },
     "open_kitchen": {
+        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [-1.9369315883259304, -2.2616069367536142, 0.0],
         "orientation": [0.0, 0.0, -0.7056717966949518, 0.7085388594490203],
     },
     "coffee_table": {
+        "initial_target_joints": [0.2, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [3.9634266041991695, 0.9449825671950015, 0.0],
         "orientation": [0.0, 0.0, -0.71349853502434, 0.7006567208827164],
     },
     "sofa": {
+        "initial_target_joints": [0.3, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [2.098556770716819, 1.1490546885248516, 0.0],
         "orientation": [0.0, 0.0, -0.690454382206587, 0.7233759369039866],
     },
@@ -123,7 +139,7 @@ def load_pointcloud(pcd_path):
 def main():
     """
     Test script for Fetch robot collision avoidance.
-    Modified to load the point cloud outside the Fetch class.
+    Modified to load multiple point clouds for a more complete environment model.
     """
     # Initialize the robot
     robot = Fetch()
@@ -131,7 +147,7 @@ def main():
     try:
         # STEP 0: First go to a good starting pose for further motion planning
         print("\n=== Step 0: Moving to a good starting pose ===")
-        initial_target_joints = [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0]
+        initial_target_joints = test_cases[target_test]["initial_target_joints"]
 
         print("Initial target joint configuration:")
         for name, value in zip(robot.planning_joint_names, initial_target_joints):
@@ -171,44 +187,57 @@ def main():
         nav_time = time.time() - nav_start_time
         print(f"Navigation completed in {nav_time:.2f} seconds")
 
-        # STEP 2: Load the point cloud for collision checking
-        print("\n=== Step 2: Loading point cloud for collision avoidance ===")
-        # Path to point cloud
-        pcd_path = f"mp_collision_models/{target_test}.ply"
-
-        # Load point cloud data from file - this is now done in the test script
+        # STEP 2: Load all point clouds for collision checking
+        print("\n=== Step 2: Loading multiple point clouds for collision avoidance ===")
+        
+        # Track total points and loading time
+        total_points = 0
         pc_load_start_time = time.time()
-        point_cloud_data = load_pointcloud(pcd_path)
+        
+        # We'll combine all point clouds into one for processing
+        combined_points = None
+        
+        for pcd_file in pcd_files:
+            # Path to point cloud
+            pcd_path = f"mp_collision_models/{pcd_file}"
+            
+            # Load point cloud data from file
+            point_cloud_data = load_pointcloud(pcd_path)
+            
+            if point_cloud_data is not None:
+                # Keep track of total points
+                total_points += len(point_cloud_data)
+                
+                # Add to combined point cloud
+                if combined_points is None:
+                    combined_points = point_cloud_data
+                else:
+                    combined_points = np.vstack((combined_points, point_cloud_data))
+        
         pc_load_time = time.time() - pc_load_start_time
-
-        if point_cloud_data is None:
-            print("Failed to load point cloud. Proceeding without collision model.")
-            pc_time = 0
+        
+        if combined_points is None or len(combined_points) == 0:
+            print("Failed to load any point clouds. Proceeding without collision model.")
+            pc_time = pc_load_time
         else:
-            print(
-                f"Point cloud loaded in {pc_load_time:.2f} seconds with {len(point_cloud_data)} points"
-            )
-
-            # Process the loaded point cloud data
+            print(f"All point clouds loaded in {pc_load_time:.2f} seconds with a total of {len(combined_points)} points")
+            
+            # Process the combined point cloud data
             pc_process_start_time = time.time()
             result = robot.add_pointcloud(
-                point_cloud_data, frame_id="map", filter_radius=0.02, filter_cull=True
+                combined_points, frame_id="map", filter_radius=0.02, filter_cull=True
             )
             pc_process_time = time.time() - pc_process_start_time
-
+            
             if result < 0:
-                print(
-                    "Failed to process point cloud. Proceeding without collision model."
-                )
+                print("Failed to process combined point cloud. Proceeding without collision model.")
                 pc_time = pc_load_time
             else:
-                print(f"Point cloud processed in {pc_process_time:.2f} seconds")
+                print(f"Combined point cloud processed in {pc_process_time:.2f} seconds")
                 pc_time = pc_load_time + pc_process_time
 
         # STEP 3: Plan and execute the arm motion with collision avoidance
-        print(
-            "\n=== Step 3: Planning and executing arm motion with collision avoidance ==="
-        )
+        print("\n=== Step 3: Planning and executing arm motion with collision avoidance ===")
 
         # Target arm joint configuration with torso included as first joint
         torso_height = 0.37
@@ -237,9 +266,7 @@ def main():
         motion_time = time.time() - planning_start_time
 
         if result is not None:
-            print(
-                f"Motion planning and execution completed in {motion_time:.2f} seconds"
-            )
+            print(f"Motion planning and execution completed in {motion_time:.2f} seconds")
 
             # Final status
             print("\n=== Task Summary ===")
@@ -247,9 +274,8 @@ def main():
             print(f"Navigation time: {nav_time:.2f} seconds")
             print(f"Point cloud processing time: {pc_time:.2f} seconds")
             print(f"Motion planning and execution time: {motion_time:.2f} seconds")
-            print(
-                f"Total time: {initial_motion_time + nav_time + pc_time + motion_time:.2f} seconds"
-            )
+            print(f"Total time: {initial_motion_time + nav_time + pc_time + motion_time:.2f} seconds")
+            print(f"Total points loaded from {len(pcd_files)} point clouds: {total_points}")
             print("\nTask completed successfully!")
         else:
             print("Motion planning or execution failed!")
