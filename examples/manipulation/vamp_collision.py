@@ -6,7 +6,7 @@ import open3d as o3d
 import os
 from fetch.fetch import Fetch
 
-target_test = "workstation"
+target_test = "sofa"
 
 # List of all PCD files to load
 pcd_files = [
@@ -21,27 +21,27 @@ pcd_files = [
 
 test_cases = {
     "workstation": {
-        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "initial_target_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [-2.7782226013936215, 0.15580237473099096, 0.0],
         "orientation": [0.0, 0.0, -0.6538142154802868, 0.7566551206698445],
     },
     "table": {
-        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "position": [-1.4217454107706076, 1.458057698007385, 0.0],
+        "initial_target_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "position": [-1.4870152105885424, 1.3377760483626338, 0.0],
         "orientation": [0.0, 0.0, 0.9999908525888619, 0.004277234924690651],
     },
     "open_kitchen": {
-        "initial_target_joints": [0.37, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "position": [-1.9369315883259304, -2.2616069367536142, 0.0],
+        "initial_target_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "position": [-1.6795810749673257, -2.3876239483526103, 0.0],
         "orientation": [0.0, 0.0, -0.7056717966949518, 0.7085388594490203],
     },
     "coffee_table": {
-        "initial_target_joints": [0.2, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "position": [3.9634266041991695, 0.9449825671950015, 0.0],
+        "initial_target_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "position": [3.8899313571135536, 0.9125618816816462, 0.0],
         "orientation": [0.0, 0.0, -0.71349853502434, 0.7006567208827164],
     },
     "sofa": {
-        "initial_target_joints": [0.3, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "initial_target_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "position": [2.098556770716819, 1.1490546885248516, 0.0],
         "orientation": [0.0, 0.0, -0.690454382206587, 0.7233759369039866],
     },
@@ -225,7 +225,7 @@ def main():
             # Process the combined point cloud data
             pc_process_start_time = time.time()
             result = robot.add_pointcloud(
-                combined_points, frame_id="map", filter_radius=0.02, filter_cull=True
+                combined_points, frame_id="map"
             )
             pc_process_time = time.time() - pc_process_start_time
             

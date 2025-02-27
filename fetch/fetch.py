@@ -14,7 +14,6 @@ from control_msgs.msg import (
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
-import tf2_geometry_msgs
 import time
 
 
@@ -126,7 +125,7 @@ class Fetch:
                 self.simp_settings,
             ) = vamp.configure_robot_and_planner_with_kwargs(
                 "fetch",  # Robot name
-                "rrtc",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
+                "prm",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
                 sampler_name="halton",  # Use Halton sampler for better coverage
                 radius=0.0001,  # Connection radius
                 max_iters=5000,  # Maximum planning iterations
@@ -481,7 +480,7 @@ class Fetch:
 
             # Define robot-specific radius parameters
             r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
-            point_radius = 0.01  # Default point radius for collision checking
+            point_radius = 0.03  # Default point radius for collision checking
 
             # Add the filtered point cloud to the environment
             try:
