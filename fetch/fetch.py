@@ -98,6 +98,8 @@ class Fetch:
             "wrist_flex_joint",
             "wrist_roll_joint",
         ]
+        
+        self.planner = "rrtc" # ["rrtc", "fcit", "prm"]
 
         # Initialize VAMP planner
         self._init_vamp_planner()
@@ -125,7 +127,7 @@ class Fetch:
                 self.simp_settings,
             ) = vamp.configure_robot_and_planner_with_kwargs(
                 "fetch",  # Robot name
-                "rrtc",  # Planner algorithm (Rapidly-exploring Random Tree Connect)
+                self.planner,  # Planner algorithm (Rapidly-exploring Random Tree Connect)
                 sampler_name="halton",  # Use Halton sampler for better coverage
                 # radius=0.0001,  # Connection radius
                 # max_iters=5000,  # Maximum planning iterations

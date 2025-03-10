@@ -6,7 +6,7 @@ import open3d as o3d
 import os
 from fetch.fetch import Fetch
 
-target_test = "sofa"
+target_test = "workstation"
 
 # List of all PCD files to load
 pcd_files = [
