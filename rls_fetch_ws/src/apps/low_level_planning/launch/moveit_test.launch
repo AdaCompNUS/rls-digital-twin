@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Launch Fetch MoveIt configuration without any custom arguments -->
+  <include file="$(find fetch_moveit_config)/launch/move_group.launch">
+    <arg name="allow_trajectory_execution" value="true"/>
+    <arg name="fake_execution" value="false"/>
+    <arg name="info" value="true"/>
+    <arg name="debug" value="false"/>
+    <!-- Remove the load_robot_description argument -->
+  </include>
+  
+  <!-- Launch RViz with default MoveIt configuration -->
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find fetch_moveit_config)/launch/moveit.rviz"
+        required="true" />
+</launch>
