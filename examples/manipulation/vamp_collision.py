@@ -4,6 +4,7 @@ import time
 import numpy as np
 import open3d as o3d
 import os
+import math
 from fetch.fetch import Fetch
 
 target_test = "workstation"
@@ -139,7 +140,8 @@ def load_pointcloud(pcd_path):
 def main():
     """
     Test script for Fetch robot collision avoidance.
-    Modified to load multiple point clouds for a more complete environment model.
+    Modified to load multiple point clouds for a more complete environment model and update the robot's base parameters
+    using the current ROS transform before motion planning.
     """
     # Initialize the robot
     robot = Fetch()
@@ -228,7 +230,7 @@ def main():
 
             # Process the combined point cloud data
             pc_process_start_time = time.time()
-            result = robot.add_pointcloud(combined_points, frame_id="map")
+            result = robot.add_pointcloud(combined_points)
             pc_process_time = time.time() - pc_process_start_time
 
             if result < 0:
@@ -242,21 +244,36 @@ def main():
                 )
                 pc_time = pc_load_time + pc_process_time
 
+        # NEW: Update robot base parameters using current transform
+        # Before motion planning, read the transform from "map" to "base_link" and update base_x, base_y, and base_theta.
+        try:
+            transform = robot.tf_buffer.lookup_transform(
+                "map", "base_link", rospy.Time(0), rospy.Duration(5.0)
+            )
+            trans = transform.transform.translation
+            rot = transform.transform.rotation
+
+            # Compute yaw from quaternion
+            yaw = math.atan2(2.0 * (rot.w * rot.z + rot.x * rot.y), 1.0 - 2.0 * (rot.y**2 + rot.z**2))
+            rospy.loginfo(f"Current robot base transform: x={trans.x}, y={trans.y}, theta={yaw}")
+            # Update the robot's base parameters
+            robot.set_base_params(yaw, trans.x, trans.y)
+        except Exception as e:
+            rospy.logwarn(f"Could not update base parameters: {e}")
+
         # STEP 3: Plan and execute the arm motion with collision avoidance
-        print(
-            "\n=== Step 3: Planning and executing arm motion with collision avoidance ==="
-        )
+        print("\n=== Step 3: Planning and executing arm motion with collision avoidance ===")
 
         # Target arm joint configuration with torso included as first joint
         torso_height = 0.37
         target_joints = [
             torso_height,  # torso_lift
-            0.80,  # shoulder_pan
-            -0.40,  # shoulder_lift
-            -1.5,  # upperarm_roll
-            1.5,  # elbow_flex
-            1.0,  # forearm_roll
-            -0.0,  # wrist_flex
+            0.80,          # shoulder_pan
+            -0.40,         # shoulder_lift
+            -1.5,          # upperarm_roll
+            1.5,           # elbow_flex
+            1.0,           # forearm_roll
+            -0.0,          # wrist_flex
             2.169129759130249,  # wrist_roll
         ]
 

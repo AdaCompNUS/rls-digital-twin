@@ -138,12 +138,61 @@ class Fetch:
             # Initialize the sampler
             self.sampler = self.vamp_module.halton()
             self.sampler.skip(0)  # Skip initial samples if needed
+            
+            # Default base parameters
+            self.base_theta = 0.0
+            self.base_x = 0.0
+            self.base_y = 0.0
+            
+            # Set the base parameters
+            self.vamp_module.set_base_params(self.base_theta, self.base_x, self.base_y)
 
             rospy.loginfo("VAMP planner initialized with collision avoidance settings")
 
         except Exception as e:
             rospy.logerr(f"Failed to initialize VAMP planner: {str(e)}")
             raise
+        
+    def set_base_params(self, theta, x, y):
+        """
+        Set the base parameters for the Fetch robot.
+        
+        Args:
+            theta (float): Base rotation around z-axis in radians
+            x (float): Base x position in meters
+            y (float): Base y position in meters
+        """
+        try:
+            self.base_theta = theta
+            self.base_x = x
+            self.base_y = y
+            
+            # Update the base parameters in the VAMP module
+            self.vamp_module.set_base_params(theta, x, y)
+            
+            rospy.loginfo(f"Set base parameters: theta={theta:.6f}, x={x:.6f}, y={y:.6f}")
+            return True
+        except Exception as e:
+            rospy.logerr(f"Failed to set base parameters: {str(e)}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return False
+        
+    def get_base_params(self):
+        """
+        Get the current base parameters for the Fetch robot.
+        
+        Returns:
+            tuple: (theta, x, y) current base parameters
+        """
+        try:
+            theta = self.vamp_module.get_base_theta()
+            x = self.vamp_module.get_base_x()
+            y = self.vamp_module.get_base_y()
+            return (theta, x, y)
+        except Exception as e:
+            rospy.logerr(f"Failed to get base parameters: {str(e)}")
+            return (self.base_theta, self.base_x, self.base_y)
 
     def get_current_planning_joints(self):
         """Get current joint positions for planning (8-DOF including torso)."""
@@ -381,7 +430,6 @@ class Fetch:
     def add_pointcloud(
         self,
         points,
-        frame_id="map",
         filter_radius=0.02,
         filter_cull=False,
         enable_filtering=False,
@@ -391,7 +439,6 @@ class Fetch:
 
         Args:
             points: List of [x,y,z] points or numpy array of shape (N,3)
-            frame_id: The frame ID that the point cloud is defined in
             filter_radius: Filter radius for pointcloud filtering (used only if enable_filtering=True)
             filter_cull: Whether to cull pointcloud around robot (used only if enable_filtering=True)
             enable_filtering: Whether to enable point cloud filtering (default: False)
@@ -412,33 +459,6 @@ class Fetch:
             # Convert to numpy array if not already
             if not isinstance(points, np.ndarray):
                 points = np.array(points, dtype=np.float64)
-
-            # Check if transformation is needed
-            if frame_id != "base_link":
-                rospy.loginfo(f"Transforming points from {frame_id} to base_link...")
-
-                # Wait for transform to be available
-                try:
-                    self.tf_buffer.lookup_transform(
-                        "base_link", frame_id, rospy.Time(0), rospy.Duration(5.0)
-                    )
-                    points = self._transform_points(points, frame_id, "base_link")
-
-                    # Check if transformation was successful
-                    if len(points) == 0:
-                        rospy.logerr("Transformation resulted in zero points")
-                        return -1
-
-                except (
-                    tf2_ros.LookupException,
-                    tf2_ros.ConnectivityException,
-                    tf2_ros.ExtrapolationException,
-                ) as e:
-                    rospy.logerr(f"Transform lookup failed: {e}")
-                    return -1
-
-            transform_time = time() - start_time
-            rospy.loginfo(f"Transformation completed in {transform_time:.3f} seconds")
 
             # Determine whether to apply filtering
             if enable_filtering:
@@ -510,7 +530,6 @@ class Fetch:
                         f"""Pointcloud processing stats:
                         Original size: {len(points)}
                         Filtered size: {len(points_to_use)}
-                        Transform time: {transform_time:.3f}s
                         Filter time: {filter_time:.3f}s
                         Build time: {build_time * 1e-6:.3f}s
                         Add time: {add_time:.3f}s
@@ -520,7 +539,6 @@ class Fetch:
                     rospy.loginfo(
                         f"""Pointcloud processing stats (NO FILTERING):
                         Points processed: {len(points)}
-                        Transform time: {transform_time:.3f}s
                         Build time: {build_time * 1e-6:.3f}s
                         Add time: {add_time:.3f}s
                         Total processing time: {processing_time:.3f}s
