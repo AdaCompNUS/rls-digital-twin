@@ -15,6 +15,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import time
+from .whole_body_controller import WholeBodyController
 
 
 class Fetch:
@@ -103,6 +104,9 @@ class Fetch:
 
         # Initialize VAMP planner
         self._init_vamp_planner()
+        
+        # Initialize the whole body controller
+        self.whole_body_controller = WholeBodyController()
 
     def _joint_states_callback(self, msg):
         """Callback for joint states messages."""
@@ -129,23 +133,11 @@ class Fetch:
                 "fetch",  # Robot name
                 self.planner,  # Planner algorithm (Rapidly-exploring Random Tree Connect)
                 sampler_name="halton",  # Use Halton sampler for better coverage
-                # radius=0.0001,  # Connection radius
-                # max_iters=5000,  # Maximum planning iterations
-                # timeout_us=3000000,  # Timeout in microseconds (3 seconds)
-                # collision_check_res=0.01,  # Collision checking resolution
             )
 
             # Initialize the sampler
             self.sampler = self.vamp_module.halton()
             self.sampler.skip(0)  # Skip initial samples if needed
-            
-            # Default base parameters
-            self.base_theta = 0.0
-            self.base_x = 0.0
-            self.base_y = 0.0
-            
-            # Set the base parameters
-            self.vamp_module.set_base_params(self.base_theta, self.base_x, self.base_y)
 
             rospy.loginfo("VAMP planner initialized with collision avoidance settings")
 
@@ -283,6 +275,591 @@ class Fetch:
 
             rospy.logerr(traceback.format_exc())
             return None
+        
+    def plan_whole_body_motion(self, start_joints, goal_joints, start_base, goal_base):
+        """`
+        Plan a whole body motion using the multilayer RRTC planner.
+        
+        Args:
+            start_joints: List of 8 joint positions for start configuration
+            goal_joints: List of 8 joint positions for goal configuration
+            start_base: List of 3 values [x, y, theta] for start base configuration
+            goal_base: List of 3 values [x, y, theta] for goal base configuration
+            
+        Returns:
+            dict: Planning results or None if planning failed
+        """
+        try:
+            # Validate input dimensions
+            if len(start_joints) != 8 or len(goal_joints) != 8:
+                rospy.logerr(f"Invalid joint dimensions. Expected 8, got {len(start_joints)} and {len(goal_joints)}")
+                return None
+                
+            if len(start_base) != 3 or len(goal_base) != 3:
+                rospy.logerr(f"Invalid base dimensions. Expected 3, got {len(start_base)} and {len(goal_base)}")
+                return None
+            
+            start_joints = [round(val, 3) for val in start_joints]
+            goal_joints = [round(val, 3) for val in goal_joints]
+            start_base = [round(val, 3) for val in start_base]
+            goal_base = [round(val, 3) for val in goal_base]
+            
+            # Validate input values
+            self.set_base_params(*start_base)
+            if not self.vamp_module.validate(start_joints, self.env):
+                rospy.loginfo("Start configuration valid")
+            else:
+                rospy.logerr("Start configuration not valid")
+                return
+            self.set_base_params(*goal_base)
+            if not self.vamp_module.validate(goal_joints, self.env):
+                rospy.loginfo("Target configuration valid")
+            else:
+                rospy.logerr("Target configuration not valid")
+                return
+            
+            rospy.loginfo("Planning whole body motion:")
+            rospy.loginfo(f"Start arm config: {start_joints}")
+            rospy.loginfo(f"Goal arm config: {goal_joints}")
+            rospy.loginfo(f"Start base config: {start_base}")
+            rospy.loginfo(f"Goal base config: {goal_base}")
+            
+            # Use multilayer_rrtc for planning
+            result = self.vamp_module.multilayer_rrtc(
+                start_joints,  # arm start config array
+                goal_joints,  # arm goal config array
+                start_base,  # base start config array
+                goal_base,  # base goal config array
+                self.env,
+                self.plan_settings,
+                self.sampler,
+            )
+            
+            if result.is_successful():
+                rospy.loginfo("Whole body motion planning succeeded!")
+                
+                # Get the arm path from the multilayer planning result
+                arm_path = result.arm_result.path
+                
+                # Get the base path from the result
+                base_configs = []
+                try:
+                    # Extract the base path
+                    base_path = result.base_path
+                    for config in base_path:
+                        base_configs.append(config.config)
+                except Exception as e:
+                    rospy.logwarn(f"Error extracting base_path: {e}, using alternative method")
+                    # Alternative method to get base path
+                    if hasattr(result.base_result, "path") and result.base_result.path is not None:
+                        base_path = result.base_result.path
+                        for i in range(len(base_path)):
+                            config = base_path[i]
+                            if hasattr(config, "to_list"):
+                                base_configs.append(config.to_list())
+                            elif hasattr(config, "config"):
+                                base_configs.append(config.config)
+                            else:
+                                base_configs.append(list(config))
+                
+                # Convert base_configs to list of lists for whole_body_simplify
+                base_path_list = []
+                for config in base_configs:
+                    if isinstance(config, list):
+                        base_path_list.append(config)
+                    else:
+                        base_path_list.append(list(config))
+                
+                # Convert arm path to a list of lists for whole_body_simplify
+                arm_path_list = []
+                for config in arm_path:
+                    if isinstance(config, list):
+                        arm_path_list.append(config)
+                    elif isinstance(config, np.ndarray):
+                        arm_path_list.append(config.tolist())
+                    else:
+                        arm_path_list.append(config.to_list())
+                
+                rospy.loginfo(f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations")
+                
+                # Use whole_body_simplify instead of regular simplify
+                whole_body_result = self.vamp_module.whole_body_simplify(
+                    arm_path_list, 
+                    base_path_list, 
+                    self.env, 
+                    self.simp_settings, 
+                    self.sampler
+                )
+                
+                # Verify that arm and base paths have the same length after simplification
+                if not whole_body_result.validate_paths():
+                    rospy.logwarn("Simplified arm and base paths have different lengths!")
+                    rospy.logwarn(f"Arm path: {len(whole_body_result.arm_result.path)}, Base path: {len(whole_body_result.base_path)}")
+                else:
+                    rospy.loginfo(f"Verified: Arm and base paths both have {len(whole_body_result.arm_result.path)} waypoints")
+                
+                # Interpolate both arm and base paths together
+                rospy.loginfo("Interpolating whole-body path...")
+                interpolation_resolution = self.vamp_module.resolution()
+                whole_body_result.interpolate(interpolation_resolution)
+                rospy.loginfo(f"Interpolated with resolution {interpolation_resolution}")
+                
+                # Get the interpolated paths
+                arm_path = whole_body_result.arm_result.path
+                base_path = whole_body_result.base_path
+                
+                # Extract base configurations as lists
+                base_configs = []
+                for config in base_path:
+                    if hasattr(config, "config"):
+                        base_configs.append(config.config)
+                    elif hasattr(config, "to_list"):
+                        base_configs.append(config.to_list())
+                    else:
+                        base_configs.append(list(config))
+                
+                # Create stats dictionary manually to avoid pandas dependency
+                stats = {
+                    "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
+                    "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
+                    "total_planning_time_ms": result.nanoseconds / 1e6,
+                    "planning_iterations": result.arm_result.iterations,
+                    "base_planning_iterations": result.base_result.iterations,
+                    "planning_graph_size": (
+                        sum(result.arm_result.size) if result.arm_result.size else 0
+                    ),
+                    "simplification_time_ms": whole_body_result.arm_result.nanoseconds / 1e6
+                }
+                
+                # Log statistics
+                rospy.loginfo(
+                    f"""Whole body planning statistics:
+                    Total Planning Time: {stats['total_planning_time_ms']:.3f}ms
+                    Arm Planning Time: {stats['arm_planning_time_ms']:.3f}ms
+                    Base Planning Time: {stats['base_planning_time_ms']:.3f}ms
+                    Simplification Time: {stats['simplification_time_ms']:.3f}ms
+                    Planning Iters: {stats['planning_iterations']}
+                    Base Planning Iters: {stats['base_planning_iterations']}
+                    Graph States: {stats['planning_graph_size']}"""
+                )
+                
+                rospy.loginfo(f"Base path length: {len(base_configs)} waypoints")
+                rospy.loginfo(f"Arm path length: {len(arm_path)} waypoints")
+                
+                # Return planning results
+                return {
+                    "success": True,
+                    "stats": stats,
+                    "arm_path": arm_path,
+                    "base_configs": base_configs
+                }
+            else:
+                rospy.logwarn("Whole body motion planning failed.")
+                
+                # Create stats dictionary for failure case without pandas dependency
+                stats = {
+                    "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
+                    "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
+                    "total_planning_time_ms": result.nanoseconds / 1e6,
+                    "planning_iterations": result.arm_result.iterations,
+                    "base_planning_iterations": result.base_result.iterations,
+                    "planning_graph_size": (
+                        sum(result.arm_result.size) if result.arm_result.size else 0
+                    ),
+                }
+                
+                return {
+                    "success": False,
+                    "stats": stats,
+                    "arm_path": None,
+                    "base_configs": None
+                }
+        except Exception as e:
+            rospy.logerr(f"Error in whole body motion planning: {e}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return None
+
+    def execute_whole_body_motion(self, arm_path, base_configs, duration=10.0):
+        """
+        Execute a whole body motion plan with the Fetch robot using direct velocity control.
+        
+        This implementation uses direct velocity control for both the base and arm/torso
+        for coordinated whole-body motion, moving through waypoints sequentially.
+        
+        Args:
+            arm_path: VAMP path object for the arm trajectory
+            base_configs: List of base configurations [x, y, theta]
+            duration: Total duration of the motion execution in seconds
+            
+        Returns:
+            bool: True if execution succeeded, False otherwise
+        """
+        try:
+            # Validate input
+            if arm_path is None or base_configs is None:
+                rospy.logerr("Cannot execute motion: arm_path or base_configs is None")
+                return False
+                
+            # Process arm path
+            arm_points = []
+            for i in range(len(arm_path)):
+                point = arm_path[i]
+                if isinstance(point, list):
+                    arm_points.append(point)
+                elif isinstance(point, np.ndarray):
+                    arm_points.append(point.tolist())
+                else:
+                    # Assume it has a to_list method
+                    arm_points.append(point.to_list())
+            
+            # Ensure equal length
+            if len(arm_points) != len(base_configs):
+                min_len = min(len(arm_points), len(base_configs))
+                rospy.logwarn(f"Length mismatch: arm_points({len(arm_points)}) != base_configs({len(base_configs)}). Truncating to {min_len}.")
+                arm_points = arm_points[:min_len]
+                base_configs = base_configs[:min_len]
+            
+            # Import necessary modules
+            import tf.transformations
+            from nav_msgs.msg import Odometry
+            
+            # Reset controller errors before starting
+            self.whole_body_controller.reset_errors()
+            
+            # Keep track of odom data
+            odom_data = None
+            def odom_callback(msg):
+                nonlocal odom_data
+                odom_data = msg
+            
+            # Subscribe to odom topic
+            rospy.Subscriber('/odom', Odometry, odom_callback)
+            
+            # Wait briefly for first odom message
+            wait_start = rospy.Time.now()
+            while odom_data is None and not rospy.is_shutdown():
+                if (rospy.Time.now() - wait_start).to_sec() > 2.0:
+                    rospy.logwarn("No odometry data received. Will use TF for position tracking instead.")
+                    break
+                rospy.sleep(0.1)
+            
+            # Calculate time per waypoint
+            waypoint_duration = duration / len(arm_points)
+            
+            rospy.loginfo(f"Executing {len(arm_points)} waypoints over {duration:.2f} seconds")
+            
+            # Execute trajectory point by point
+            for i in range(len(arm_points)):
+                if rospy.is_shutdown():
+                    rospy.logwarn("ROS shutdown detected, stopping trajectory execution")
+                    return False
+                
+                # Get target position for this waypoint
+                target_joint_positions = arm_points[i]
+                target_base_config = base_configs[i]
+                
+                rospy.loginfo(f"Processing waypoint {i+1}/{len(arm_points)}: "
+                            f"base [{target_base_config[0]:.2f}, {target_base_config[1]:.2f}, "
+                            f"{target_base_config[2]:.2f}], joints [{', '.join([f'{v:.2f}' for v in target_joint_positions[:3]])}...]")
+                
+                # Control loop for this waypoint
+                waypoint_start_time = rospy.Time.now()
+                
+                # Continue until we reach the position or timeout
+                while not rospy.is_shutdown():
+                    # Check if we should timeout
+                    elapsed = (rospy.Time.now() - waypoint_start_time).to_sec()
+                    if elapsed >= waypoint_duration:
+                        rospy.logwarn(f"Timeout reached for waypoint {i+1}")
+                        break
+                    
+                    # Get current position from TF
+                    try:
+                        # First try to get position from map to base_link transform
+                        transform = self.tf_buffer.lookup_transform(
+                            "map", "base_link", rospy.Time(0), rospy.Duration(0.1)
+                        )
+                        
+                        # Extract current position and orientation
+                        current_x = transform.transform.translation.x
+                        current_y = transform.transform.translation.y
+                        
+                        # Get current yaw from quaternion
+                        q = transform.transform.rotation
+                        quaternion = [q.x, q.y, q.z, q.w]
+                        _, _, current_theta = tf.transformations.euler_from_quaternion(quaternion)
+                        
+                    except Exception as e:
+                        # Fall back to odometry if TF fails
+                        if odom_data is None:
+                            rospy.logwarn(f"No position data available: {e}")
+                            continue
+                        
+                        # Get position from odom
+                        current_x = odom_data.pose.pose.position.x
+                        current_y = odom_data.pose.pose.position.y
+                        
+                        # Get orientation as yaw from quaternion
+                        q = odom_data.pose.pose.orientation
+                        quaternion = [q.x, q.y, q.z, q.w]
+                        _, _, current_theta = tf.transformations.euler_from_quaternion(quaternion)
+                        
+                        # Transform from odom to map frame if possible
+                        try:
+                            transform = self.tf_buffer.lookup_transform(
+                                "map", "odom", rospy.Time(0), rospy.Duration(0.1)
+                            )
+                            
+                            # Apply transform
+                            cos_yaw = np.cos(transform.transform.rotation.z)
+                            sin_yaw = np.sin(transform.transform.rotation.z)
+                            
+                            # Rotate position
+                            tx = transform.transform.translation.x
+                            ty = transform.transform.translation.y
+                            rx = current_x * cos_yaw - current_y * sin_yaw + tx
+                            ry = current_x * sin_yaw + current_y * cos_yaw + ty
+                            
+                            # Update with transformed values
+                            current_x = rx
+                            current_y = ry
+                            current_theta += transform.transform.rotation.z
+                            
+                            # Normalize angle
+                            while current_theta > np.pi:
+                                current_theta -= 2*np.pi
+                            while current_theta < -np.pi:
+                                current_theta += 2*np.pi
+                                
+                        except Exception:
+                            # Continue with odom frame if transform fails
+                            pass
+                    
+                    # Get current joint positions
+                    current_joint_positions = self.get_current_planning_joints()
+                    if current_joint_positions is None:
+                        rospy.logwarn("Could not get current joint positions")
+                        continue
+                    
+                    # Calculate position error in map frame for the base
+                    dx = target_base_config[0] - current_x
+                    dy = target_base_config[1] - current_y
+                    distance_error = np.sqrt(dx*dx + dy*dy)
+                    
+                    # Calculate heading to target
+                    target_heading = np.arctan2(dy, dx)
+                    
+                    # Calculate angle error (handle wraparound)
+                    angle_to_target = target_heading - current_theta
+                    while angle_to_target > np.pi:
+                        angle_to_target -= 2*np.pi
+                    while angle_to_target < -np.pi:
+                        angle_to_target += 2*np.pi
+                    
+                    # Final orientation error (only consider when close to target position)
+                    final_angle_error = target_base_config[2] - current_theta
+                    while final_angle_error > np.pi:
+                        final_angle_error -= 2*np.pi
+                    while final_angle_error < -np.pi:
+                        final_angle_error += 2*np.pi
+                    
+                    # Determine if we've reached the target for base
+                    base_position_reached = distance_error < self.whole_body_controller.POSITION_TOLERANCE
+                    base_angle_reached = abs(final_angle_error) < self.whole_body_controller.ANGLE_TOLERANCE
+                    
+                    # Use the controller to calculate base velocity
+                    current_position = [current_x, current_y, current_theta]
+                    linear_vel, angular_vel = self.whole_body_controller.calculate_base_velocity(
+                        current_position, 
+                        target_base_config, 
+                        distance_error, 
+                        angle_to_target, 
+                        final_angle_error, 
+                        base_position_reached
+                    )
+                    
+                    # Use the controller to calculate joint velocities
+                    joint_velocities, joint_errors, joints_reached = self.whole_body_controller.calculate_joint_velocities(
+                        current_joint_positions, target_joint_positions
+                    )
+                    
+                    # Check if we've reached target for both base and joints
+                    target_reached = base_position_reached and base_angle_reached and joints_reached
+                    
+                    if target_reached:
+                        rospy.loginfo(f"Waypoint {i+1} reached completely")
+                        break
+                    
+                    # Send velocity commands using the controller
+                    self.whole_body_controller.send_velocity_commands(linear_vel, angular_vel, joint_velocities)
+                    
+                    # Log progress every second
+                    if int(elapsed * 2) % 2 == 0:  # Every ~0.5 seconds
+                        progress = int(100 * elapsed / waypoint_duration)
+                        rospy.loginfo(f"Waypoint {i+1} progress: {progress}%, " 
+                                    f"base error: {distance_error:.3f}m, {np.degrees(final_angle_error):.1f}°, "
+                                    f"joint errors: {np.mean(np.abs(joint_errors)):.3f}")
+                    
+                    # Control loop rate
+                    self.whole_body_controller.rate.sleep()
+                
+                # Stop robot at the end of each waypoint
+                self.whole_body_controller.stop_all_motion()
+                
+                # Give robot a moment to settle
+                rospy.sleep(0.2)
+            
+            # Final verification that we reached the last point
+            try:
+                # Get final joint positions
+                final_joint_positions = self.get_current_planning_joints()
+                if final_joint_positions is None:
+                    rospy.logwarn("Could not get final joint positions")
+                    return False
+                
+                # Calculate final joint errors
+                final_joint_errors = [abs(final_joint_positions[j] - arm_points[-1][j]) for j in range(len(final_joint_positions))]
+                avg_joint_error = sum(final_joint_errors) / len(final_joint_errors)
+                
+                # Get final base position
+                transform = self.tf_buffer.lookup_transform("map", "base_link", rospy.Time(0), rospy.Duration(1.0))
+                final_x = transform.transform.translation.x
+                final_y = transform.transform.translation.y
+                
+                q = transform.transform.rotation
+                quaternion = [q.x, q.y, q.z, q.w]
+                _, _, final_theta = tf.transformations.euler_from_quaternion(quaternion)
+                
+                final_base_pos_error = np.sqrt((final_x - base_configs[-1][0])**2 + (final_y - base_configs[-1][1])**2)
+                
+                final_base_angle_error = abs(final_theta - base_configs[-1][2])
+                while final_base_angle_error > np.pi:
+                    final_base_angle_error -= 2*np.pi
+                final_base_angle_error = abs(final_base_angle_error)
+                
+                rospy.loginfo(f"Trajectory complete - Final errors: joint avg={avg_joint_error:.4f}, "
+                            f"base position={final_base_pos_error:.4f}m, "
+                            f"base angle={final_base_angle_error:.4f}rad")
+                
+                # Return success if errors are acceptable
+                return avg_joint_error < 0.05 and final_base_pos_error < 0.1 and final_base_angle_error < 0.1
+                
+            except Exception as e:
+                rospy.logwarn(f"Could not verify final position: {e}")
+                # If we can't verify, assume success
+                return True
+                
+        except Exception as e:
+            rospy.logerr(f"Error in whole body motion execution: {e}")
+            
+            # Ensure the robot stops moving
+            try:
+                # Stop using the controller
+                self.whole_body_controller.stop_all_motion()
+            except:  # noqa: E722
+                pass
+                
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return False
+
+    def send_whole_body_motion(self, target_joints, target_base, start_joints=None, start_base=None, duration=10.0):
+        """
+        Plan and execute a whole body motion to target joint and base configurations.
+        
+        Args:
+            target_joints: List of 8 joint positions [torso + 7 arm joints]
+            target_base: List of 3 base values [x, y, theta]
+            start_joints: List of 8 joint positions for start, or None to use current
+            start_base: List of 3 base values for start, or None to use current
+            duration: Time to execute trajectory
+            
+        Returns:
+            bool: True if motion succeeded, False otherwise
+        """
+        try:
+            # Get current joint positions if not provided
+            if start_joints is None:
+                start_joints = self.get_current_planning_joints()
+                if start_joints is None:
+                    rospy.logerr("Failed to get current joint positions")
+                    return False
+                    
+            # Get current base position if not provided
+            if start_base is None:
+                try:
+                    # Get transform from map to base_link
+                    transform = self.tf_buffer.lookup_transform(
+                        "map", "base_link", rospy.Time(0), rospy.Duration(1.0)
+                    )
+                    
+                    # Extract current base position and orientation
+                    current_x = transform.transform.translation.x
+                    current_y = transform.transform.translation.y
+                    
+                    # Extract orientation as quaternion
+                    quat = [
+                        transform.transform.rotation.x,
+                        transform.transform.rotation.y,
+                        transform.transform.rotation.z,
+                        transform.transform.rotation.w
+                    ]
+                    
+                    # Convert quaternion to Euler angles
+                    import tf.transformations
+                    euler = tf.transformations.euler_from_quaternion(quat)
+                    current_theta = euler[2]  # Yaw angle
+                    
+                    start_base = [current_x, current_y, current_theta]
+                    
+                except (tf2_ros.LookupException, tf2_ros.ConnectivityException, 
+                        tf2_ros.ExtrapolationException) as e:
+                    rospy.logwarn(f"Could not get current base pose: {e}")
+                    # Use default values
+                    start_base = [0.0, 0.0, 0.0]
+                    
+            # Validate input dimensions
+            if len(target_joints) != 8:
+                rospy.logerr(f"Invalid target joints: expected 8 values, got {len(target_joints)}")
+                return False
+                
+            if len(target_base) != 3:
+                rospy.logerr(f"Invalid target base: expected 3 values, got {len(target_base)}")
+                return False
+                
+            if len(start_joints) != 8:
+                rospy.logerr(f"Invalid start joints: expected 8 values, got {len(start_joints)}")
+                return False
+                
+            if len(start_base) != 3:
+                rospy.logerr(f"Invalid start base: expected 3 values, got {len(start_base)}")
+                return False
+                
+            # Log motion parameters
+            rospy.loginfo(f"Planning whole body motion from {start_base} to {target_base}")
+            
+            # Plan whole body motion
+            plan_result = self.plan_whole_body_motion(
+                start_joints, target_joints, start_base, target_base
+            )
+            
+            if plan_result is None or not plan_result["success"]:
+                rospy.logerr("Failed to plan whole body motion")
+                return False
+                
+            # Execute the planned motion
+            execution_result = self.execute_whole_body_motion(
+                plan_result["arm_path"], plan_result["base_configs"], duration
+            )
+            
+            return execution_result
+            
+        except Exception as e:
+            rospy.logerr(f"Error in send_whole_body_motion: {e}")
+            import traceback
+            rospy.logerr(traceback.format_exc())
+            return False
 
     def add_sphere(self, position, radius, name=None):
         """

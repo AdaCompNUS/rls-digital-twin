@@ -254,26 +254,32 @@ def main():
             rot = transform.transform.rotation
 
             # Compute yaw from quaternion
-            yaw = math.atan2(2.0 * (rot.w * rot.z + rot.x * rot.y), 1.0 - 2.0 * (rot.y**2 + rot.z**2))
-            rospy.loginfo(f"Current robot base transform: x={trans.x}, y={trans.y}, theta={yaw}")
+            yaw = math.atan2(
+                2.0 * (rot.w * rot.z + rot.x * rot.y), 1.0 - 2.0 * (rot.y**2 + rot.z**2)
+            )
+            rospy.loginfo(
+                f"Current robot base transform: x={trans.x}, y={trans.y}, theta={yaw}"
+            )
             # Update the robot's base parameters
             robot.set_base_params(yaw, trans.x, trans.y)
         except Exception as e:
             rospy.logwarn(f"Could not update base parameters: {e}")
 
         # STEP 3: Plan and execute the arm motion with collision avoidance
-        print("\n=== Step 3: Planning and executing arm motion with collision avoidance ===")
+        print(
+            "\n=== Step 3: Planning and executing arm motion with collision avoidance ==="
+        )
 
         # Target arm joint configuration with torso included as first joint
         torso_height = 0.37
         target_joints = [
             torso_height,  # torso_lift
-            0.80,          # shoulder_pan
-            -0.40,         # shoulder_lift
-            -1.5,          # upperarm_roll
-            1.5,           # elbow_flex
-            1.0,           # forearm_roll
-            -0.0,          # wrist_flex
+            0.80,  # shoulder_pan
+            -0.40,  # shoulder_lift
+            -1.5,  # upperarm_roll
+            1.5,  # elbow_flex
+            1.0,  # forearm_roll
+            -0.0,  # wrist_flex
             2.169129759130249,  # wrist_roll
         ]
 
