@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Load controller parameters -->
+  <rosparam command="load" file="$(find fetch_drivers)/config/whole_body_controller.yaml" ns="fetch_whole_body_controller" />
+  
+  <!-- Launch the controller node -->
+  <node name="fetch_whole_body_controller" pkg="fetch_drivers" type="fetch_whole_body_controller_node" output="screen">
+    <!-- Additional parameters can be set here -->
+  </node>
+</launch> 

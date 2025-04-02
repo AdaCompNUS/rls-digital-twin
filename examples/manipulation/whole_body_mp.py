@@ -10,7 +10,7 @@ from fetch.fetch import Fetch
 
 # Configuration for testing
 TARGET_ENVIRONMENT = (
-    "workstation"  # Options: workstation, table, open_kitchen, coffee_table, sofa
+    "open_kitchen"  # Options: workstation, table, open_kitchen, coffee_table, sofa
 )
 USE_POINTCLOUD = True  # Set to False to skip pointcloud loading
 ENABLE_COLLISION_CHECKING = True  # Set to False to skip collision checking

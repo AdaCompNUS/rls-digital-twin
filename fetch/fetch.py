@@ -15,7 +15,6 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import time
-from .whole_body_controller import WholeBodyController
 
 
 class Fetch:
@@ -105,8 +104,14 @@ class Fetch:
         # Initialize VAMP planner
         self._init_vamp_planner()
         
-        # Initialize the whole body controller
-        self.whole_body_controller = WholeBodyController()
+        # Publisher for whole body trajectory execution
+        # This will communicate with the C++ WholeBodyController node
+        self.arm_path_pub = rospy.Publisher(
+            "/fetch_whole_body_controller/arm_path", JointTrajectory, queue_size=1
+        )
+        self.base_path_pub = rospy.Publisher(
+            "/fetch_whole_body_controller/base_path", JointTrajectory, queue_size=1
+        )
 
     def _joint_states_callback(self, msg):
         """Callback for joint states messages."""
@@ -400,7 +405,8 @@ class Fetch:
                 
                 # Interpolate both arm and base paths together
                 rospy.loginfo("Interpolating whole-body path...")
-                interpolation_resolution = self.vamp_module.resolution()
+                interpolation_resolution = 64
+                # interpolation_resolution = self.vamp_module.resolution()
                 whole_body_result.interpolate(interpolation_resolution)
                 rospy.loginfo(f"Interpolated with resolution {interpolation_resolution}")
                 
@@ -482,13 +488,13 @@ class Fetch:
 
     def execute_whole_body_motion(self, arm_path, base_configs, duration=10.0):
         """
-        Execute a whole body motion plan with the Fetch robot using direct velocity control.
+        Execute a whole body motion plan with the Fetch robot.
         
-        This implementation uses direct velocity control for both the base and arm/torso
-        for coordinated whole-body motion, moving through waypoints sequentially.
+        This method sends the planned trajectories to the C++ whole body controller
+        for coordinated whole-body motion.
         
         Args:
-            arm_path: VAMP path object for the arm trajectory
+            arm_path: List of arm joint configurations (8-DOF including torso)
             base_configs: List of base configurations [x, y, theta]
             duration: Total duration of the motion execution in seconds
             
@@ -501,25 +507,62 @@ class Fetch:
                 rospy.logerr("Cannot execute motion: arm_path or base_configs is None")
                 return False
             
-            # Delegate execution to the whole body controller
-            return self.whole_body_controller.follow_whole_body_trajectory(
-                arm_path, 
-                base_configs, 
-                self.tf_buffer, 
-                self.get_current_planning_joints,
-                duration
-            )
+            # Process arm path
+            processed_arm_path = []
+            for point in arm_path:
+                if isinstance(point, list):
+                    processed_arm_path.append(point)
+                elif isinstance(point, np.ndarray):
+                    processed_arm_path.append(point.tolist())
+                else:
+                    # Assume it has a to_list method
+                    processed_arm_path.append(point.to_list())
+            
+            # Send trajectories to the C++ controller
+            
+            # Create the arm trajectory message
+            arm_traj_msg = JointTrajectory()
+            arm_traj_msg.header.stamp = rospy.Time.now()
+            arm_traj_msg.joint_names = self.planning_joint_names
+            
+            # Create the base trajectory message (using joint_names as a placeholder)
+            base_traj_msg = JointTrajectory()
+            base_traj_msg.header.stamp = rospy.Time.now()
+            base_traj_msg.joint_names = ["x", "y", "theta"]  # Base has 3 DOF
+            
+            # Calculate time spacing for points
+            time_step = duration / len(processed_arm_path)
+            
+            # Add points to both trajectories
+            for i in range(len(processed_arm_path)):
+                # Arm point
+                arm_point = JointTrajectoryPoint()
+                arm_point.positions = processed_arm_path[i]
+                arm_point.time_from_start = rospy.Duration(i * time_step)
+                arm_traj_msg.points.append(arm_point)
                 
+                # Base point
+                base_point = JointTrajectoryPoint()
+                base_point.positions = base_configs[i]
+                base_point.time_from_start = rospy.Duration(i * time_step)
+                base_traj_msg.points.append(base_point)
+            
+            # Publish trajectories
+            self.arm_path_pub.publish(arm_traj_msg)
+            self.base_path_pub.publish(base_traj_msg)
+            
+            # Give time for controller to receive and process the message
+            rospy.sleep(0.5)
+            
+            # The C++ controller is handling execution, so we just wait for completion
+            rospy.loginfo(f"Whole body motion execution started, waiting {duration + 2.0} seconds...")
+            rospy.sleep(duration + 2.0)  # Add a small buffer time for completion
+            
+            rospy.loginfo("Whole body motion execution completed")
+            return True
+            
         except Exception as e:
             rospy.logerr(f"Error in whole body motion execution: {e}")
-            
-            # Ensure the robot stops moving
-            try:
-                # Stop using the controller
-                self.whole_body_controller.stop_all_motion()
-            except:  # noqa: E722
-                pass
-                
             import traceback
             rospy.logerr(traceback.format_exc())
             return False
