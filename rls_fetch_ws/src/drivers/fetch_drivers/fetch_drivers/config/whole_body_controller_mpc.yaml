@@ -1,0 +1,32 @@
+# MPC Controller Parameters
+
+# Control parameters
+control_rate: 20.0
+prediction_horizon: 20
+
+# Velocity limits
+max_linear_vel: 1.5
+max_angular_vel: 1.0
+position_tolerance: 0.03
+angle_tolerance: 0.05
+
+# Joint configuration
+joint_names:
+  - torso_lift_joint
+  - shoulder_pan_joint
+  - shoulder_lift_joint
+  - upperarm_roll_joint
+  - elbow_flex_joint
+  - forearm_roll_joint
+  - wrist_flex_joint
+  - wrist_roll_joint
+
+max_joint_velocities: [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+# MPC cost weights
+Q_state: 10.0
+R_control: 1.0
+R_smooth: 0.0
+P_terminal: 1.0 
+
+debug: true

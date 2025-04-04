@@ -12,6 +12,7 @@ authors = [
 dependencies = [
     "rospy",
     "numpy",
+    "casadi",
     "vamp @ git+https://github.com/AdaCompNUS/vamp.git",
 ]
 requires-python = ">=3.8"
