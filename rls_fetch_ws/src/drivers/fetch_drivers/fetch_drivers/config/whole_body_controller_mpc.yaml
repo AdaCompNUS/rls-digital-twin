@@ -1,8 +1,8 @@
 # MPC Controller Parameters
 
 # Control parameters
-control_rate: 20.0
-prediction_horizon: 20
+control_rate: 10.0
+prediction_horizon: 10
 
 # Velocity limits
 max_linear_vel: 1.5
