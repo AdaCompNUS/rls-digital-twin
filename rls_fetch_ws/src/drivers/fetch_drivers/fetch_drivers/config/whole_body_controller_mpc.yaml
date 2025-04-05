@@ -23,9 +23,13 @@ joint_names:
 
 max_joint_velocities: [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
-# MPC cost weights
-Q_state: 10.0
-R_control: 1.0
+# MPC cost weights - State weights (x, y, theta, torso_joint, 7 arm_joints)
+Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+
+# Control input weights - Different weights for base and arm
+# Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
+R_control: [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+
 R_smooth: 0.0
 P_terminal: 1.0 
 

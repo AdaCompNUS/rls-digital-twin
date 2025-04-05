@@ -4,7 +4,6 @@ import casadi as ca
 import numpy as np
 from geometry_msgs.msg import Twist, PoseWithCovarianceStamped
 from sensor_msgs.msg import JointState
-from nav_msgs.msg import Odometry
 from trajectory_msgs.msg import JointTrajectory
 import tf2_ros
 import tf.transformations as tf_trans
@@ -27,10 +26,32 @@ class WholeBodyMPC:
         self.max_angular_vel = params['max_angular_vel']
         self.max_joint_vel = np.array(params['max_joint_velocities'])
         
-        # Weights
-        self.Q_state = params['Q_state']
-        self.R_control = params['R_control']
+        # Weights - now handling vectors/matrices
+        # Convert Q_state to numpy array if it's a list, or create a default diagonal
+        if isinstance(params['Q_state'], list):
+            if len(params['Q_state']) == self.nx:
+                self.Q_state = np.array(params['Q_state'])
+            else:
+                rospy.logwarn(f"Q_state in config has wrong dimension: expected {self.nx}, got {len(params['Q_state'])}. Using default.")
+                self.Q_state = 10.0 * np.ones(self.nx)
+        else:
+            # Scalar value, use it for all states
+            self.Q_state = params['Q_state'] * np.ones(self.nx)
+        
+        # Convert R_control to numpy array if it's a list, or create a default diagonal
+        if isinstance(params['R_control'], list):
+            if len(params['R_control']) == self.nu:
+                self.R_control = np.array(params['R_control'])
+            else:
+                rospy.logwarn(f"R_control in config has wrong dimension: expected {self.nu}, got {len(params['R_control'])}. Using default.")
+                self.R_control = 1.0 * np.ones(self.nu)
+        else:
+            # Scalar value, use it for all controls
+            self.R_control = params['R_control'] * np.ones(self.nu)
+            
         self.R_smooth = params['R_smooth']
+        
+        # P_terminal can be scalar, will convert to vector in solver if needed
         self.P_terminal = params['P_terminal']
         
         # Slack weights
@@ -39,6 +60,11 @@ class WholeBodyMPC:
         
         # Debug flag
         self.debug = params['debug']
+        
+        if self.debug:
+            rospy.loginfo(f"Initialized MPC with weights:")
+            rospy.loginfo(f"Q_state = {self.Q_state}")
+            rospy.loginfo(f"R_control = {self.R_control}")
         
         self.solver = self.create_solver()
 
@@ -66,32 +92,51 @@ class WholeBodyMPC:
         for i in range(self.N):
             # Split the state vector into components for proper handling
             # Position (x, y)
-            position_error = ca.sumsqr(X[:2,i] - X_ref[:2,i])
+            position_error = X[:2,i] - X_ref[:2,i]
             
             # Orientation (theta) - use angular distance metric
-            orientation_error = 1 - ca.cos(X[2,i] - X_ref[2,i])
+            orientation_error = (1 - ca.cos(X[2,i] - X_ref[2,i])) * 2  # Factor of 2 for proper scaling
             
             # Joint positions
-            joint_error = ca.sumsqr(X[3:,i] - X_ref[3:,i])
+            joint_error = X[3:,i] - X_ref[3:,i]
             
-            # Combined cost with appropriate weights
-            state_cost = self.Q_state * (position_error + 2 * orientation_error + joint_error)
+            # Combined weighted state cost with elementwise weights
+            position_cost = self.Q_state[:2].reshape(1, 2) @ (position_error * position_error)
+            orientation_cost = self.Q_state[2] * orientation_error
+            joint_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (joint_error * joint_error)
+            
+            state_cost = position_cost + orientation_cost + joint_cost
             cost += state_cost
             
-            # Control and smoothness costs remain unchanged
-            cost += self.R_control * ca.sumsqr(U[:,i])
+            # Weighted control costs
+            control_cost = self.R_control.reshape(1, self.nu) @ (U[:,i] * U[:,i])
+            cost += control_cost
+            
+            # Control smoothing
             if i > 0:
-                cost += self.R_smooth * ca.sumsqr(U[:,i] - U[:,i-1])
+                smoothness_cost = self.R_smooth * ca.sumsqr(U[:,i] - U[:,i-1])
+                cost += smoothness_cost
             
             # Add penalties for slack variables
             cost += slack_dynamics_weight * ca.sumsqr(slack_dynamics[:,i])
             cost += slack_input_weight * ca.sumsqr(slack_inputs[:,i])
         
-        # Terminal cost - also using proper angle handling
-        position_error_terminal = ca.sumsqr(X[:2,-1] - X_ref[:2,-1])
-        orientation_error_terminal = 1 - ca.cos(X[2,-1] - X_ref[2,-1])
-        joint_error_terminal = ca.sumsqr(X[3:,-1] - X_ref[3:,-1])
-        terminal_cost = self.P_terminal * (position_error_terminal + 2 * orientation_error_terminal + joint_error_terminal)
+        # Terminal cost with state weights
+        position_error_terminal = X[:2,-1] - X_ref[:2,-1]
+        orientation_error_terminal = (1 - ca.cos(X[2,-1] - X_ref[2,-1])) * 2
+        joint_error_terminal = X[3:,-1] - X_ref[3:,-1]
+        
+        # Make P_terminal a vector if it's scalar
+        if isinstance(self.P_terminal, (int, float)):
+            P_terminal_vec = self.P_terminal * np.ones(self.nx)
+        else:
+            P_terminal_vec = self.P_terminal
+        
+        position_cost_terminal = P_terminal_vec[:2].reshape(1, 2) @ (position_error_terminal * position_error_terminal)
+        orientation_cost_terminal = P_terminal_vec[2] * orientation_error_terminal
+        joint_cost_terminal = P_terminal_vec[3:].reshape(1, self.nx-3) @ (joint_error_terminal * joint_error_terminal)
+        
+        terminal_cost = position_cost_terminal + orientation_cost_terminal + joint_cost_terminal
         cost += terminal_cost
         
         # Dynamics constraints with slack variables
@@ -224,7 +269,7 @@ class WholeBodyController:
         self.mpc = WholeBodyMPC(self.params)
         
         # ROS interfaces
-        self.cmd_vel_pub = rospy.Publisher('/base_controller/command', Twist, queue_size=1)
+        self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
         self.joint_vel_pub = rospy.Publisher(
             '/arm_with_torso_controller/joint_velocity_controller/command', JointState, queue_size=1)
         
@@ -252,8 +297,12 @@ class WholeBodyController:
             'max_angular_vel': rospy.get_param('~max_angular_vel', 1.0),
             'max_joint_velocities': rospy.get_param('~max_joint_velocities', 
                 [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-            'Q_state': rospy.get_param('~Q_state', 10.0),
-            'R_control': rospy.get_param('~R_control', 1.0),
+            # Load Q_state as either vector or scalar
+            'Q_state': rospy.get_param('~Q_state', 
+                [10.0, 10.0, 20.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]),
+            # Load R_control as either vector or scalar  
+            'R_control': rospy.get_param('~R_control', 
+                [15.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]),
             'R_smooth': rospy.get_param('~R_smooth', 5.0),
             'P_terminal': rospy.get_param('~P_terminal', 20.0),
             'slack_dynamics_weight': rospy.get_param('~slack_dynamics_weight', 1000.0),
