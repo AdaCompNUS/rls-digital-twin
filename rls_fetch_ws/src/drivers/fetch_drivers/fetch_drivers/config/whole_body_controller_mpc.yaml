@@ -30,7 +30,12 @@ Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
 # Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
 R_control: [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 
-R_smooth: 0.0
-P_terminal: 1.0 
+# Obstacle avoidance parameters
+lidar_max_range: 1.5                # Maximum range to consider for obstacle detection (meters)
+safe_distance: 0.5                  # Minimum safe distance from obstacles (meters)
+voxel_size: 0.3                     # Size of voxels for point cloud clustering (meters)
+max_obstacle_points: 10             # Maximum number of obstacle points to consider
+obstacle_weight: 100.0              # Weight for obstacle avoidance constraints
+slack_obstacle_weight: 200.0        # Weight for obstacle slack variables
 
 debug: true
