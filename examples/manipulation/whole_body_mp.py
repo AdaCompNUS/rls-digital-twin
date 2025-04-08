@@ -10,7 +10,7 @@ from fetch.fetch import Fetch
 
 # Configuration for testing
 TARGET_ENVIRONMENT = (
-    "open_kitchen"  # Options: workstation, table, open_kitchen, coffee_table, sofa
+    "test"  # Options: workstation, table, open_kitchen, coffee_table, sofa
 )
 USE_POINTCLOUD = True  # Set to False to skip pointcloud loading
 ENABLE_COLLISION_CHECKING = True  # Set to False to skip collision checking
@@ -38,7 +38,7 @@ TEST_CASES = {
     "table": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "initial_base": [0, 0, 0],
-        "target_joints": [0.35, 0.70, -0.50, -1.0, 1.2, 0.8, 0.2, 1.5],
+        "target_joints": [0.2, 0.70, -0.50, -1.0, 1.2, 0.8, 0.2, 1.5],
         "target_base": [-1.25, 1.20, 0.85],
     },
     "open_kitchen": {
@@ -58,6 +58,12 @@ TEST_CASES = {
         "initial_base": [0, 0, 0],
         "target_joints": [0.25, 0.90, -0.30, -1.3, 1.0, 0.7, 0.1, 2.0],
         "target_base": [1.95, 0.90, -0.62],
+    },
+    "test": {
+        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
+        "initial_base": [0, 0, 0],
+        "target_joints": [0.2, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
+        "target_base": [-0.0856903180037, -0.542703287224, 0.0],
     },
 }
 

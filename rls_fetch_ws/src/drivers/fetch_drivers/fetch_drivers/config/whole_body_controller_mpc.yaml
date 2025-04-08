@@ -4,8 +4,8 @@ control_rate: 10.0
 prediction_horizon: 10
 
 # Velocity limits
-max_linear_vel: 1.5
-max_angular_vel: 1.0
+max_linear_vel: 0.5
+max_angular_vel: 0.3
 position_tolerance: 0.03
 angle_tolerance: 0.05
 
@@ -24,14 +24,14 @@ joint_names:
   - wrist_flex_joint
   - wrist_roll_joint
 
-max_joint_velocities: [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-max_joint_accelerations: [0.02, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]  # Maximum joint acceleration (rad/s²)
+max_joint_velocities: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+max_joint_accelerations: [0.01, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]  # Maximum joint acceleration (rad/s²)
 
 # MPC cost weights - State weights (x, y, theta, torso_joint, 7 arm_joints)
 Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
 
 # Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
-R_control: [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+R_control: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
 
 # Slack weights
 slack_dynamics_weight: 1000.0
