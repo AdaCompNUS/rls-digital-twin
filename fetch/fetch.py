@@ -115,7 +115,11 @@ class Fetch:
 
     def _joint_states_callback(self, msg):
         """Callback for joint states messages."""
-        self.joint_states = msg
+        # Only save messages with length > 2 to filter out gripper messages
+        if len(msg.name) > 2:
+            self.joint_states = msg
+        else:
+            rospy.logdebug(f"Ignoring joint state message with only {len(msg.name)} joints")
 
     def _init_vamp_planner(self):
         """

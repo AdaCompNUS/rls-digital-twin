@@ -1,5 +1,4 @@
 # MPC Controller Parameters
-
 # Control parameters
 control_rate: 10.0
 prediction_horizon: 10
@@ -9,6 +8,10 @@ max_linear_vel: 1.5
 max_angular_vel: 1.0
 position_tolerance: 0.03
 angle_tolerance: 0.05
+
+# Acceleration limits
+max_linear_acc: 1.5  # Maximum linear acceleration (m/s²)
+max_angular_acc: 1.5  # Maximum angular acceleration (rad/s²)
 
 # Joint configuration
 joint_names:
@@ -22,20 +25,25 @@ joint_names:
   - wrist_roll_joint
 
 max_joint_velocities: [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+max_joint_accelerations: [0.02, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]  # Maximum joint acceleration (rad/s²)
 
 # MPC cost weights - State weights (x, y, theta, torso_joint, 7 arm_joints)
-Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
 
-# Control input weights - Different weights for base and arm
 # Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
 R_control: [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 
-# Obstacle avoidance parameters
-lidar_max_range: 1.5                # Maximum range to consider for obstacle detection (meters)
-safe_distance: 0.5                  # Minimum safe distance from obstacles (meters)
-voxel_size: 0.3                     # Size of voxels for point cloud clustering (meters)
-max_obstacle_points: 10             # Maximum number of obstacle points to consider
-obstacle_weight: 100.0              # Weight for obstacle avoidance constraints
-slack_obstacle_weight: 200.0        # Weight for obstacle slack variables
+# Slack weights
+slack_dynamics_weight: 1000.0
+slack_obstacle_weight: 200.0
 
+# Obstacle avoidance parameters
+lidar_max_range: 1.5  # Maximum range to consider for obstacle detection (meters)
+safe_distance: 0.5    # Minimum safe distance from obstacles (meters)
+voxel_size: 0.3       # Size of voxels for point cloud clustering (meters)
+max_obstacle_points: 10  # Maximum number of obstacle points to consider
+obstacle_weight: 100.0   # Weight for obstacle avoidance constraints
+gamma_k: 0.1            # CBF decay rate
+
+# Debug settings
 debug: true

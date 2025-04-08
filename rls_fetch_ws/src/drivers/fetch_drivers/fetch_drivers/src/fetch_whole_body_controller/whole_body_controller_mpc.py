@@ -31,6 +31,11 @@ class WholeBodyMPC:
         self.max_angular_vel = params['max_angular_vel']
         self.max_joint_vel = np.array(params['max_joint_velocities'])
         
+        # Acceleration limits
+        self.max_linear_acc = params.get('max_linear_acc', 0.5)
+        self.max_angular_acc = params.get('max_angular_acc', 0.8)
+        self.max_joint_acc = np.array(params.get('max_joint_accelerations', [0.05, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))
+        
         # State and control weights
         if isinstance(params['Q_state'], list):
             if len(params['Q_state']) == self.nx:
@@ -64,6 +69,8 @@ class WholeBodyMPC:
         self.gamma_k = params.get('gamma_k', 0.1)  # CBF decay rate
         self.M_CBF = min(3, self.N)  # Number of steps to apply CBF (using full horizon)
         
+        self.acc_horizon = min(2, self.N)
+        
         # Debug flag
         self.debug = params['debug']
         
@@ -72,6 +79,7 @@ class WholeBodyMPC:
             rospy.loginfo(f"Q_state = {self.Q_state}")
             rospy.loginfo(f"R_control = {self.R_control}")
             rospy.loginfo(f"Obstacle params: safe_distance={self.safe_distance}, gamma_k={self.gamma_k}")
+            rospy.loginfo(f"Acceleration limits: linear={self.max_linear_acc}, angular={self.max_angular_acc}")
         
         # Initialize obstacle data
         self.obstacle_positions = []
@@ -93,6 +101,9 @@ class WholeBodyMPC:
         # Parameters for reference trajectory and initial state
         X_ref = opti.parameter(self.nx, self.N+1)
         X0 = opti.parameter(self.nx)
+        
+        # Parameter for previous control input (for acceleration constraints)
+        U_prev = opti.parameter(self.nu)
         
         # Parameters for obstacles: for each obstacle point, store x,y for each time step in horizon
         # We'll limit to max_obstacle_points obstacles, each with N+1 positions (full horizon)
@@ -164,6 +175,36 @@ class WholeBodyMPC:
                 opti.subject_to(U[2+j,i] <= self.max_joint_vel[j])
                 opti.subject_to(U[2+j,i] >= -self.max_joint_vel[j])
         
+        # Acceleration constraints - limit rate of change between consecutive control inputs
+        # For the first control input, compare with the previous control input (parameter)
+        # Linear acceleration (base)
+        opti.subject_to(U[0,0] - U_prev[0] <= self.max_linear_acc * self.dt)
+        opti.subject_to(U[0,0] - U_prev[0] >= -self.max_linear_acc * self.dt)
+        
+        # Angular acceleration (base)
+        opti.subject_to(U[1,0] - U_prev[1] <= self.max_angular_acc * self.dt)
+        opti.subject_to(U[1,0] - U_prev[1] >= -self.max_angular_acc * self.dt)
+        
+        # Joint accelerations (torso and arm)
+        for j in range(self.n_torso_joints + self.n_arm_joints):
+            opti.subject_to(U[2+j,0] - U_prev[2+j] <= self.max_joint_acc[j] * self.dt)
+            opti.subject_to(U[2+j,0] - U_prev[2+j] >= -self.max_joint_acc[j] * self.dt)
+        
+        # For the rest of the prediction horizon, compare consecutive control inputs
+        for i in range(1, self.acc_horizon):
+            # Linear acceleration (base)
+            opti.subject_to(U[0,i] - U[0,i-1] <= self.max_linear_acc * self.dt)
+            opti.subject_to(U[0,i] - U[0,i-1] >= -self.max_linear_acc * self.dt)
+            
+            # Angular acceleration (base)
+            opti.subject_to(U[1,i] - U[1,i-1] <= self.max_angular_acc * self.dt)
+            opti.subject_to(U[1,i] - U[1,i-1] >= -self.max_angular_acc * self.dt)
+            
+            # Joint accelerations (torso and arm)
+            for j in range(self.n_torso_joints + self.n_arm_joints):
+                opti.subject_to(U[2+j,i] - U[2+j,i-1] <= self.max_joint_acc[j] * self.dt)
+                opti.subject_to(U[2+j,i] - U[2+j,i-1] >= -self.max_joint_acc[j] * self.dt)
+        
         # Non-negativity constraints for slack variables
         opti.subject_to(opti.bounded(0, slack_dynamics, 1.0))
         
@@ -208,6 +249,7 @@ class WholeBodyMPC:
         self.U = U
         self.X_ref = X_ref
         self.X0 = X0
+        self.U_prev = U_prev
         self.obstacle_params = obstacle_params
         self.slack_dynamics = slack_dynamics
         self.cbf_slack = cbf_slack
@@ -219,12 +261,17 @@ class WholeBodyMPC:
         if self.debug and len(self.obstacle_positions) > 0:
             rospy.logdebug(f"Updated {len(self.obstacle_positions)} obstacle positions")
 
-    def solve(self, x0, x_ref, predicted_obstacles=None):
+    def solve(self, x0, x_ref, predicted_obstacles=None, u_prev=None):
         """Solve the MPC problem with CBF constraints"""
         try:
             # Set parameter values
             self.opti.set_value(self.X0, x0)
             self.opti.set_value(self.X_ref, x_ref)
+            
+            # Set previous control input (for acceleration constraints)
+            if u_prev is None:
+                u_prev = np.zeros(self.nu)
+            self.opti.set_value(self.U_prev, u_prev)
             
             # If no predictions provided, assume obstacles are static
             if predicted_obstacles is None:
@@ -309,6 +356,9 @@ class WholeBodyController:
         self.lidar_data = None
         self.obstacle_positions = []
         
+        # Track previous control input for acceleration constraints
+        self.prev_control = None
+        
         # Create TF buffer with longer cache time for better performance
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -344,7 +394,7 @@ class WholeBodyController:
             self.process_obstacles_cb
         )
         
-        rospy.loginfo("Whole Body Controller initialized with CBF-based obstacle avoidance")
+        rospy.loginfo("Whole Body Controller initialized with CBF-based obstacle avoidance and acceleration constraints")
 
     def load_parameters(self):
         return {
@@ -354,6 +404,11 @@ class WholeBodyController:
             'max_angular_vel': rospy.get_param('~max_angular_vel', 1.0),
             'max_joint_velocities': rospy.get_param('~max_joint_velocities', 
                 [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            # Acceleration limits (new parameters)
+            'max_linear_acc': rospy.get_param('~max_linear_acc', 0.5),
+            'max_angular_acc': rospy.get_param('~max_angular_acc', 0.8),
+            'max_joint_accelerations': rospy.get_param('~max_joint_accelerations', 
+                [0.05, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
             'Q_state': rospy.get_param('~Q_state', 
                 [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]),
             'R_control': rospy.get_param('~R_control', 
@@ -373,7 +428,11 @@ class WholeBodyController:
         }
 
     def joint_cb(self, msg):
-        self.joint_states = dict(zip(msg.name, msg.position))
+        # Only process messages with length > 2 to filter out gripper messages
+        if len(msg.name) > 2:
+            self.joint_states = dict(zip(msg.name, msg.position))
+        else:
+            rospy.logdebug(f"Ignoring joint state message with only {len(msg.name)} joints")
 
     def amcl_pose_cb(self, msg):
         """Callback for AMCL pose messages"""
@@ -721,8 +780,8 @@ class WholeBodyController:
             rospy.logdebug(f"Number of obstacles: {len(predicted_obstacles)}")
             start_time = rospy.Time.now()
             
-        # Solve MPC with CBF constraints
-        X, U = self.mpc.solve(current_state, ref, predicted_obstacles)
+        # Solve MPC with CBF constraints and acceleration constraints
+        X, U = self.mpc.solve(current_state, ref, predicted_obstacles, self.prev_control)
         
         if self.params['debug']:
             solve_time = (rospy.Time.now() - start_time).to_sec()
@@ -732,6 +791,9 @@ class WholeBodyController:
             rospy.logerr("MPC solve failed. Stopping execution.")
             self.stop_execution()
             return
+            
+        # Store current control input as previous for next iteration
+        self.prev_control = U[:,0]
             
         # Publish commands
         self.publish_commands(U[:,0])
@@ -777,7 +839,10 @@ class WholeBodyController:
 
     def stop(self):
         """Send zero velocity commands to stop the robot"""
-        self.publish_commands(np.zeros(self.mpc.nu))
+        zero_control = np.zeros(self.mpc.nu)
+        self.publish_commands(zero_control)
+        # Update prev_control to zeros for smooth restart if needed
+        self.prev_control = zero_control
 
 
 if __name__ == '__main__':
