@@ -109,6 +109,9 @@ class WholeBodyMPC:
         # We'll limit to max_obstacle_points obstacles, each with N+1 positions (full horizon)
         obstacle_params = opti.parameter(2, self.max_obstacle_points * (self.N+1))
         
+        # New parameter: actual number of obstacle points (represented as a binary mask)
+        obstacle_mask = opti.parameter(self.max_obstacle_points)  # Binary mask for active obstacles
+        
         # Add slack variables for CBF constraints
         cbf_slack = opti.variable(self.max_obstacle_points, self.M_CBF)
         opti.subject_to(opti.bounded(0, cbf_slack, 1.0))
@@ -140,9 +143,11 @@ class WholeBodyMPC:
             # Penalties for slack variables
             cost += self.slack_dynamics_weight * ca.sumsqr(slack_dynamics[:,i])
         
-        # Add penalty for CBF slack variables
+        # Add penalty for CBF slack variables - only for active obstacles
         for i in range(self.M_CBF):
-            cost += self.slack_cbf_weight * ca.sumsqr(cbf_slack[:,i])
+            for j in range(self.max_obstacle_points):
+                # Use mask to apply slack cost only for active obstacles
+                cost += self.slack_cbf_weight * obstacle_mask[j] * ca.sumsqr(cbf_slack[j,i])
         
         # Dynamics constraints with slack variables
         for i in range(self.N):
@@ -215,8 +220,10 @@ class WholeBodyMPC:
         def h(x_, y_):
             return (x_[0] - y_[0])**2 + (x_[1] - y_[1])**2 - self.safe_distance**2
         
-        # Add CBF constraints for each obstacle
+        # Add CBF constraints for each obstacle - using the obstacle_mask to dynamically
+        # enable or disable constraints
         for j in range(self.max_obstacle_points):
+            # Create the constraint expressions but only apply them conditionally
             for i in range(self.M_CBF):
                 # Current and next state positions
                 robot_curr = X[:2, i]
@@ -224,7 +231,6 @@ class WholeBodyMPC:
                 
                 # Get obstacle positions from parameter array
                 # Each obstacle has N+1 positions (one for each timestep)
-                # So we index: j*(N+1) + i for current, and j*(N+1) + i+1 for next
                 obs_curr_x = obstacle_params[0, j*(self.N+1) + i]
                 obs_curr_y = obstacle_params[1, j*(self.N+1) + i]
                 obs_next_x = obstacle_params[0, j*(self.N+1) + i+1]
@@ -233,11 +239,13 @@ class WholeBodyMPC:
                 obs_curr = ca.vertcat(obs_curr_x, obs_curr_y)
                 obs_next = ca.vertcat(obs_next_x, obs_next_y)
                 
-                # Add CBF constraint with slack
-                opti.subject_to(
-                    h(robot_next, obs_next) >= 
-                    (1 - self.gamma_k) * h(robot_curr, obs_curr) - cbf_slack[j, i]
-                )
+                # Create the CBF constraint
+                cbf_expression = h(robot_next, obs_next) - (1 - self.gamma_k) * h(robot_curr, obs_curr) + cbf_slack[j, i]
+                
+                # Only apply the constraint if obstacle_mask[j] == 1 (active obstacle)
+                # This multiplies by a very large negative number if mask=0, effectively disabling the constraint
+                # If the obstacle is active (mask=1), we just use the original constraint
+                opti.subject_to(obstacle_mask[j] * cbf_expression + (1 - obstacle_mask[j]) * 1e6 >= 0)
         
         # Set the objective
         opti.minimize(cost)
@@ -251,6 +259,7 @@ class WholeBodyMPC:
         self.X0 = X0
         self.U_prev = U_prev
         self.obstacle_params = obstacle_params
+        self.obstacle_mask = obstacle_mask  # Store the new parameter
         self.slack_dynamics = slack_dynamics
         self.cbf_slack = cbf_slack
     
@@ -280,6 +289,20 @@ class WholeBodyMPC:
                     # Create a trajectory by repeating the current position
                     obs_traj = [obs_pos] * (self.N + 1)
                     predicted_obstacles.append(obs_traj)
+            
+            # Create obstacle mask (1 for active obstacles, 0 for inactive)
+            obstacle_mask = np.zeros(self.max_obstacle_points)
+            num_actual_obstacles = min(len(predicted_obstacles), self.max_obstacle_points)
+            
+            # Set 1s for active obstacles (up to the actual count)
+            obstacle_mask[:num_actual_obstacles] = 1.0
+            
+            # Set the obstacle mask parameter
+            self.opti.set_value(self.obstacle_mask, obstacle_mask)
+            
+            if self.debug:
+                rospy.logdebug(f"Setting actual obstacle count to: {num_actual_obstacles}")
+                rospy.logdebug(f"Obstacle mask: {obstacle_mask}")
             
             # Pack obstacle trajectories into the parameter array
             obstacle_data = np.zeros((2, self.max_obstacle_points * (self.N+1)))
@@ -329,7 +352,10 @@ class WholeBodyMPC:
                     rospy.logwarn(f"Dynamics slack active, max: {np.max(slack_dynamics)}")
                     
                 if np.any(cbf_slack > 1e-6):
-                    rospy.logwarn(f"CBF slack active, max: {np.max(cbf_slack)}")
+                    # Only check slacks for active obstacles
+                    active_slacks = cbf_slack[:num_actual_obstacles, :]
+                    if np.any(active_slacks > 1e-6):
+                        rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
             
             return X_opt, U_opt
             
