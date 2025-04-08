@@ -208,7 +208,7 @@ class Fetch:
             if joint_name in joint_dict:
                 positions.append(joint_dict[joint_name])
             else:
-                rospy.logerr(f"Joint {joint_name} not found in joint states")
+                rospy.logerr(f"Joint {joint_name} not found in joint states, The current joints are: {joint_dict}")
                 return None
 
         return positions
@@ -589,11 +589,18 @@ class Fetch:
         """
         try:
             # Get current joint positions if not provided
-            if start_joints is None:
+            max_attempts = 5  # You can adjust this number based on your needs
+            attempt_count = 0
+            
+            while start_joints is None:
                 start_joints = self.get_current_planning_joints()
                 if start_joints is None:
-                    rospy.logerr("Failed to get current joint positions")
-                    return False
+                    attempt_count += 1
+                    rospy.logwarn(f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})")
+                    if attempt_count >= max_attempts:
+                        rospy.logerr("Max attempts reached. Failed to get current joint positions")
+                        return False
+                    rospy.sleep(0.5)  # Add a small delay between attempts
                     
             # Get current base position if not provided
             if start_base is None:
@@ -1188,9 +1195,22 @@ class Fetch:
 
             # Get current joints
             current_joints = self.get_current_planning_joints()
-            if current_joints is None:
-                rospy.logerr("Failed to get current joint positions")
-                return None
+            # if current_joints is None:
+            #     rospy.logerr("Failed to get current joint positions")
+            #     return None
+            
+            max_attempts = 5  # You can adjust this number based on your needs
+            attempt_count = 0
+
+            while current_joints is None:
+                current_joints = self.get_current_planning_joints()
+                if current_joints is None:
+                    attempt_count += 1
+                    rospy.logwarn(f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})")
+                    if attempt_count >= max_attempts:
+                        rospy.logerr("Max attempts reached. Failed to get current joint positions")
+                        return False
+                    rospy.sleep(0.5)  # Add a small delay between attempts
 
             rospy.loginfo(f"Planning motion to target configuration: {target_joints}")
 
