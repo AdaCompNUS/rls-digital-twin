@@ -201,7 +201,7 @@ def main():
 
         for pcd_file in pcd_files:
             # Path to point cloud
-            pcd_path = f"mp_collision_models/{pcd_file}"
+            pcd_path = f"resources/mp_collision_models/{pcd_file}"
 
             # Load point cloud data from file
             point_cloud_data = load_pointcloud(pcd_path)
