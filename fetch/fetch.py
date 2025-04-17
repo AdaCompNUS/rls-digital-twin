@@ -15,6 +15,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import time
+from trac_ik_python.trac_ik import IK
+import math
 
 
 class Fetch:
@@ -98,12 +100,12 @@ class Fetch:
             "wrist_flex_joint",
             "wrist_roll_joint",
         ]
-        
-        self.planner = "rrtc" # ["rrtc", "fcit", "prm"]
+
+        self.planner = "rrtc"  # ["rrtc", "fcit", "prm"]
 
         # Initialize VAMP planner
         self._init_vamp_planner()
-        
+
         # Publisher for whole body trajectory execution
         # This will communicate with the C++ WholeBodyController node
         self.arm_path_pub = rospy.Publisher(
@@ -113,6 +115,642 @@ class Fetch:
             "/fetch_whole_body_controller/base_path", JointTrajectory, queue_size=1
         )
 
+        # Add URDF loading and IK solver initialization
+        self.BASE_LINK = "world_link"
+        self.EE_LINK = "gripper_link"
+
+        try:
+            # Load URDF for IK
+            urdf_path = "resources/fetch_ext/fetch ext.urdf"
+            with open(urdf_path, "r") as f:
+                self.urdf_str = f.read()
+
+            # Initialize IK solver
+            self.ik_solver = IK(
+                self.BASE_LINK,
+                self.EE_LINK,
+                urdf_string=self.urdf_str,
+                timeout=0.5,
+                epsilon=1e-6,
+            )
+
+            # Get joint limits
+            self.lower_limits, self.upper_limits = self.ik_solver.get_joint_limits()
+
+            rospy.loginfo("Initialized IK solver with fetch_ext.urdf")
+        except Exception as e:
+            rospy.logerr(f"Failed to initialize IK solver: {str(e)}")
+            import traceback
+
+            rospy.logerr(traceback.format_exc())
+
+        # Initialize default costmap path
+        self.costmap_path = "resources/costmap.npz"
+        self.costmap = None
+        self.costmap_metadata = None
+
+        # Try to load the costmap
+        self._load_costmap(self.costmap_path)
+
+    def _load_costmap(self, costmap_path):
+        try:
+            import os
+
+            if not os.path.exists(costmap_path):
+                rospy.logerr(f"Costmap file not found: {costmap_path}")
+                return False
+
+            rospy.loginfo(f"Loading costmap from {costmap_path}")
+            costmap, metadata = self._load_costmap_file(costmap_path)
+
+            if costmap is not None and metadata is not None:
+                # Explicitly log costmap dimensions to verify loading
+                rospy.loginfo(
+                    f"Successfully loaded costmap: {costmap.shape}, min={np.min(costmap)}, max={np.max(costmap)}"
+                )
+                self.costmap = costmap
+                self.costmap_metadata = metadata
+                return True
+            else:
+                rospy.logerr(f"Failed to load costmap from {costmap_path}")
+                return False
+        except Exception as e:
+            rospy.logerr(f"Error loading costmap: {e}")
+            import traceback
+
+            rospy.logerr(traceback.format_exc())
+            return False
+
+    def _load_costmap_file(self, costmap_path):
+        """
+        Load a previously generated costmap from file.
+
+        Args:
+            costmap_path: Path to the costmap .npz file
+
+        Returns:
+            tuple: (costmap, metadata) or (None, None) if loading fails
+        """
+        try:
+            import numpy as np
+
+            data = np.load(costmap_path)
+
+            # Extract costmap and metadata
+            costmap = data["costmap"]
+
+            # Create metadata dictionary
+            metadata = {
+                "resolution": float(data["resolution"]),
+                "origin_x": float(data["origin_x"]),
+                "origin_y": float(data["origin_y"]),
+                "width": int(data["width"]),
+                "height": int(data["height"]),
+                "max_distance": float(data["max_distance"]),
+            }
+
+            # Check if valid_area_mask exists in the data
+            if "valid_area_mask" in data:
+                metadata["valid_area_mask"] = data["valid_area_mask"]
+
+            return costmap, metadata
+
+        except Exception as e:
+            rospy.logerr(f"Error loading costmap file: {e}")
+            return None, None
+
+    def world_to_grid(self, world_x, world_y):
+        """
+        Convert world coordinates to grid coordinates.
+
+        Args:
+            world_x, world_y: World coordinates
+
+        Returns:
+            grid_x, grid_y: Grid coordinates
+        """
+        if self.costmap_metadata is None:
+            return None, None
+
+        grid_x = int(
+            (world_x - self.costmap_metadata["origin_x"])
+            / self.costmap_metadata["resolution"]
+        )
+        grid_y = int(
+            (world_y - self.costmap_metadata["origin_y"])
+            / self.costmap_metadata["resolution"]
+        )
+        return grid_x, grid_y
+
+    def grid_to_world(self, grid_x, grid_y):
+        """
+        Convert grid coordinates to world coordinates.
+
+        Args:
+            grid_x, grid_y: Grid coordinates
+
+        Returns:
+            world_x, world_y: World coordinates
+        """
+        if self.costmap_metadata is None:
+            return None, None
+
+        world_x = (
+            self.costmap_metadata["origin_x"]
+            + grid_x * self.costmap_metadata["resolution"]
+        )
+        world_y = (
+            self.costmap_metadata["origin_y"]
+            + grid_y * self.costmap_metadata["resolution"]
+        )
+        return world_x, world_y
+
+    def find_valid_base_positions(
+        self, ee_pose, manipulation_radius=1.0, cost_threshold=0.3
+    ):
+        """
+        Find valid base positions for the robot by intersecting the costmap with a circle
+        representing the manipulation range around the end effector.
+
+        Args:
+            ee_pose: End effector pose (geometry_msgs/Pose)
+            manipulation_radius: Radius of the manipulation range in meters
+            cost_threshold: Minimum cost value to consider a cell valid (0-1)
+
+        Returns:
+            valid_positions: List of valid base positions in world coordinates with costs and orientation scores
+            or None if costmap is not available
+        """
+        import numpy as np
+
+        if self.costmap is None or self.costmap_metadata is None:
+            rospy.logwarn("Costmap not available for finding valid base positions")
+            return None
+
+        # Convert end effector position to grid coordinates
+        ee_grid_x, ee_grid_y = self.world_to_grid(
+            ee_pose.position.x, ee_pose.position.y
+        )
+
+        if ee_grid_x is None or ee_grid_y is None:
+            rospy.logwarn("Failed to convert end effector position to grid coordinates")
+            return None
+
+        # Make sure the end effector is within the costmap bounds
+        if (
+            ee_grid_x < 0
+            or ee_grid_x >= self.costmap_metadata["width"]
+            or ee_grid_y < 0
+            or ee_grid_y >= self.costmap_metadata["height"]
+        ):
+            rospy.logwarn(
+                f"End effector position ({ee_pose.position.x}, {ee_pose.position.y}) is outside costmap bounds"
+            )
+            return None
+
+        # Create 2D grid coordinates
+        y_grid, x_grid = np.mgrid[
+            0 : self.costmap_metadata["height"], 0 : self.costmap_metadata["width"]
+        ]
+
+        # Calculate distances from each grid cell to end effector position
+        distances = (
+            np.sqrt((x_grid - ee_grid_x) ** 2 + (y_grid - ee_grid_y) ** 2)
+            * self.costmap_metadata["resolution"]
+        )
+
+        # Create circle mask (cells within manipulation range)
+        circle_mask = distances <= manipulation_radius
+
+        # Create valid cells mask (cells with cost >= threshold and not NaN)
+        valid_cells = (self.costmap >= cost_threshold) & ~np.isnan(self.costmap)
+
+        # Combine circle mask and valid cells mask to get final valid positions
+        valid_mask = circle_mask & valid_cells
+
+        # Convert valid grid positions to world coordinates
+        valid_positions = []
+        for y in range(self.costmap_metadata["height"]):
+            for x in range(self.costmap_metadata["width"]):
+                if valid_mask[y, x]:
+                    world_x, world_y = self.grid_to_world(x, y)
+
+                    # Calculate orientation towards the end effector
+                    dx = ee_pose.position.x - world_x
+                    dy = ee_pose.position.y - world_y
+                    theta = math.atan2(dy, dx)
+
+                    # Get the cost value (lower is better for sampling)
+                    cost_value = self.costmap[y, x]
+
+                    valid_positions.append((world_x, world_y, cost_value, theta))
+
+        if not valid_positions:
+            rospy.logwarn("No valid base positions found")
+        else:
+            rospy.loginfo(f"Found {len(valid_positions)} valid base positions")
+
+        return valid_positions
+
+    def generate_ik_seed(self, pose, manipulation_radius=1.0):
+        """
+        Generate a deterministic seed for IK using costmap for base position.
+        Always selects the best (lowest cost) base position from the costmap.
+
+        Args:
+            pose: Target end effector pose (geometry_msgs/Pose)
+            manipulation_radius: Radius of manipulation for base sampling
+
+        Returns:
+            seed: Deterministic seed for IK
+        """
+
+        rospy.loginfo("Generating deterministic seed for IK...")
+
+        # Initialize the seed array with midpoints as fallback
+        seed = [
+            (l + u) / 2.0 for l, u in zip(self.lower_limits, self.upper_limits)
+        ]  # noqa: E741
+
+        # Try to use costmap for base position sampling
+        if self.costmap is not None and self.costmap_metadata is not None:
+            # Find valid base positions
+            valid_positions = self.find_valid_base_positions(
+                pose, manipulation_radius, cost_threshold=0.3
+            )
+
+            if valid_positions and len(valid_positions) > 0:
+                # Sort positions by cost (ascending order)
+                sorted_positions = sorted(valid_positions, key=lambda pos: pos[2])
+
+                # Take the position with lowest cost
+                best_position = sorted_positions[0]
+                base_x, base_y, _, base_theta = best_position
+
+                # Update the first 3 elements of the seed (base position and orientation)
+                seed[0] = base_x
+                seed[1] = base_y
+                seed[2] = base_theta
+
+                rospy.loginfo(
+                    f"Using best base position: [{base_x:.4f}, {base_y:.4f}, {base_theta:.4f}]"
+                )
+        # Use midpoint values for arm joints (remaining DOFs)
+        for i in [5, 6, 7, 8, 9, 10]:
+            # seed[i] = (lower[i] + upper[i]) / 2.0
+            seed[i] = np.random.uniform(self.lower_limits[i], self.upper_limits[i])
+        rospy.loginfo(
+            f"Deterministic seed generated: {[round(val, 3) for val in seed]}"
+        )
+        return seed
+
+    def transform_pose_to_world(self, base_pos, base_yaw, ee_pos, ee_quat):
+        """
+        Transform end effector pose from robot base frame to world frame.
+
+        Args:
+            base_pos: [x, y, z] position of the robot base in world frame
+            base_yaw: Yaw angle of the robot base in world frame
+            ee_pos: [x, y, z] position of the end effector in robot base frame
+            ee_quat: [x, y, z, w] quaternion of the end effector in robot base frame
+
+        Returns:
+            world_pos: [x, y, z] position of the end effector in world frame
+            world_quat: [x, y, z, w] quaternion of the end effector in world frame
+        """
+        from scipy.spatial.transform import Rotation as R
+        import numpy as np
+
+        # Create base rotation matrix from yaw angle
+        base_rot = R.from_euler("z", base_yaw)
+        base_rot_matrix = base_rot.as_matrix()
+
+        # Transform end effector position to world frame
+        ee_pos_rotated = base_rot_matrix @ np.array(ee_pos)
+        world_pos = np.array(
+            [
+                base_pos[0] + ee_pos_rotated[0],
+                base_pos[1] + ee_pos_rotated[1],
+                ee_pos_rotated[2],  # Assuming base_pos[2] = 0 (z is up)
+            ]
+        )
+
+        # Transform end effector orientation to world frame
+        ee_rot = R.from_quat([ee_quat[0], ee_quat[1], ee_quat[2], ee_quat[3]])
+        base_rot_quat = base_rot.as_quat()  # scipy uses xyzw format
+        base_rot = R.from_quat(base_rot_quat)
+        world_rot = base_rot * ee_rot
+        world_quat = world_rot.as_quat()  # xyzw format
+
+        return world_pos, world_quat
+
+    def transform_pose_to_base(self, world_pos, world_quat, base_pos, base_yaw):
+        """
+        Transform end effector pose from world frame to robot base frame.
+
+        Args:
+            world_pos: [x, y, z] position of the end effector in world frame
+            world_quat: [x, y, z, w] quaternion of the end effector in world frame
+            base_pos: [x, y, z] position of the robot base in world frame
+            base_yaw: Yaw angle of the robot base in world frame
+
+        Returns:
+            ee_pos: [x, y, z] position of the end effector in robot base frame
+            ee_quat: [x, y, z, w] quaternion of the end effector in robot base frame
+        """
+        from scipy.spatial.transform import Rotation as R
+        import numpy as np
+
+        # Create inverse base rotation
+        base_rot = R.from_euler("z", base_yaw)
+        base_rot_inv = base_rot.inv()
+
+        # Translate world position to base origin
+        pos_rel_to_base = np.array(
+            [
+                world_pos[0] - base_pos[0],
+                world_pos[1] - base_pos[1],
+                world_pos[2],  # Assuming base_pos[2] = 0
+            ]
+        )
+
+        # Rotate to base frame
+        ee_pos = base_rot_inv.apply(pos_rel_to_base)
+
+        # Transform orientation
+        world_rot = R.from_quat(world_quat)
+        ee_rot = base_rot_inv * world_rot
+        ee_quat = ee_rot.as_quat()
+
+        return ee_pos, ee_quat
+
+    def solve_whole_body_ik(
+        self, target_pose, max_attempts=100, manipulation_radius=1.0
+    ):
+        """
+        Solve whole-body inverse kinematics for a given target pose.
+
+        This method attempts to find a valid (collision-free) configuration for the whole robot
+        (base + arm) that places the end effector at the desired pose.
+
+        Args:
+            target_pose: Target end effector pose (geometry_msgs/Pose)
+            max_attempts: Maximum number of sampling attempts
+            manipulation_radius: Radius for base position sampling
+
+        Returns:
+            dict: Solution containing base and arm configuration, or None if no solution found
+        """
+        import time
+        from geometry_msgs.msg import Pose
+
+        if not hasattr(self, "ik_solver"):
+            rospy.logerr("IK solver not initialized")
+            return None
+
+        # Copy target pose to ensure we don't modify the input
+        pose = Pose()
+        pose.position.x = target_pose.position.x
+        pose.position.y = target_pose.position.y
+        pose.position.z = target_pose.position.z
+        pose.orientation.x = target_pose.orientation.x
+        pose.orientation.y = target_pose.orientation.y
+        pose.orientation.z = target_pose.orientation.z
+        pose.orientation.w = target_pose.orientation.w
+
+        rospy.loginfo(
+            "Solving whole-body IK for pose: "
+            + f"position [{pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}], "
+            + f"orientation [{pose.orientation.x:.3f}, {pose.orientation.y:.3f}, "
+            + f"{pose.orientation.z:.3f}, {pose.orientation.w:.3f}]"
+        )
+
+        # Initialize variables for the sampling loop
+        solution = None
+        is_valid = False
+        sample_count = 0
+
+        all_time = time.time()
+
+        while not is_valid and sample_count < max_attempts:
+            sample_count += 1
+            rospy.loginfo(f"IK attempt {sample_count}/{max_attempts}")
+
+            # Generate a deterministic seed
+            seed = self.generate_ik_seed(pose, manipulation_radius)
+            rospy.loginfo(
+                f"Initial configuration (seed): {[round(val, 3) for val in seed]}"
+            )
+
+            # Start timing IK solution
+            start_time = time.time()
+
+            # Solve IK
+            solution = self.ik_solver.get_ik(
+                seed,
+                pose.position.x,
+                pose.position.y,
+                pose.position.z,
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w,
+            )
+
+            # End timing
+            end_time = time.time()
+            solve_time = end_time - start_time
+            rospy.loginfo(f"IK solving time: {solve_time:.4f} seconds")
+
+            if not solution:
+                rospy.logwarn("IK failed. Trying again...")
+                continue
+
+            rospy.loginfo("IK solution found!")
+
+            # --- Perform Collision Checking with VAMP ---
+            rospy.loginfo("Performing collision checking on IK solution...")
+
+            # VAMP only takes 8 DOF (torso + 7 arm joints), not the full solution
+            vamp_solution = list(solution)
+            base_config = vamp_solution[:3]
+
+            if len(vamp_solution) > 8:
+                rospy.loginfo(
+                    f"Extracting 8 DOF from {len(vamp_solution)}-DOF IK solution for VAMP validation"
+                )
+                # Extract the relevant joints for VAMP (skipping base)
+                vamp_solution = vamp_solution[
+                    3:11
+                ]  # Take the 8 DOF for arm (index 3 to 10)
+
+            rospy.loginfo(
+                f"Validating arm configuration: {[round(v, 3) for v in vamp_solution]}"
+            )
+            self.vamp_module.set_base_params(
+                base_config[2], base_config[0], base_config[1]
+            )
+
+            # Check if the solution is valid (collision-free)
+            is_valid = self.vamp_module.validate(vamp_solution, self.env)
+
+            if is_valid:
+                rospy.loginfo("IK solution is valid (collision-free)")
+            else:
+                rospy.logwarn(
+                    "IK solution is not valid (has collisions). Trying again..."
+                )
+
+        # Check if we found a valid solution
+        if is_valid:
+            rospy.loginfo(f"Found valid solution after {sample_count} attempts")
+            all_time_end = time.time()
+            rospy.loginfo(f"Total IK time: {all_time_end - all_time:.4f} seconds")
+
+            # Extract the base position and arm configuration
+            if len(solution) >= 3:
+                base_position = [solution[0], solution[1]]  # x, y
+                base_orientation = solution[2]  # theta (yaw)
+
+                # Create the goal_base configuration for motion planning
+                goal_base = [base_position[0], base_position[1], base_orientation]
+            else:
+                rospy.logerr(
+                    "Solution has fewer than 3 values, cannot extract base position"
+                )
+                return None
+
+            # Extract the arm configuration
+            if (
+                len(solution) >= 11
+            ):  # If we have the expected 11 values (3 base + 8 arm)
+                arm_config = solution[3:11]  # Extract 8 arm joint values
+
+                # Return the solution as a dictionary
+                return {
+                    "base_config": goal_base,
+                    "arm_config": list(arm_config),
+                    "full_solution": list(solution),
+                    "attempts": sample_count,
+                }
+            else:
+                rospy.logerr(
+                    "Solution doesn't have enough values for arm configuration"
+                )
+                return None
+        else:
+            rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
+            return None
+
+    def move_to_pose(self, target_pose, planning_time=10.0, execution_time=10.0):
+        """
+        Move the robot to place its end effector at the target pose.
+
+        This method:
+        1. Solves whole-body IK to find a valid goal configuration
+        2. Plans a whole-body motion from current to goal configuration
+        3. Executes the planned motion
+
+        Args:
+            target_pose: Target end effector pose (geometry_msgs/Pose)
+            planning_time: Maximum planning time in seconds
+            execution_time: Time for trajectory execution in seconds
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Get current configuration
+        current_joints = self.get_current_planning_joints()
+        if current_joints is None:
+            rospy.logerr("Failed to get current joint positions")
+            return False
+
+        # Get current base position
+        current_base = self.get_base_params()
+
+        # Step 1: Solve whole-body IK
+        rospy.loginfo("Step 1: Solving whole-body IK...")
+        ik_solution = self.solve_whole_body_ik(target_pose)
+
+        if ik_solution is None:
+            rospy.logerr("Failed to find IK solution")
+            return False
+
+        goal_base = ik_solution["base_config"]
+        goal_joints = ik_solution["arm_config"]
+
+        rospy.loginfo("Found valid IK solution:")
+        rospy.loginfo(f"Goal base: {[round(v, 3) for v in goal_base]}")
+        rospy.loginfo(f"Goal joints: {[round(v, 3) for v in goal_joints]}")
+
+        # Step 2: Plan whole-body motion
+        rospy.loginfo("Step 2: Planning whole-body motion...")
+        plan_result = self.plan_whole_body_motion(
+            current_joints, goal_joints, list(current_base), goal_base
+        )
+
+        if not plan_result or not plan_result["success"]:
+            rospy.logerr("Failed to plan whole-body motion")
+            return False
+
+        # Step 3: Execute the planned motion
+        rospy.loginfo("Step 3: Executing whole-body motion...")
+        execution_success = self.execute_whole_body_motion(
+            plan_result["arm_path"], plan_result["base_configs"], execution_time
+        )
+
+        if not execution_success:
+            rospy.logerr("Failed to execute whole-body motion")
+            return False
+
+        rospy.loginfo("Successfully moved to target pose")
+        return True
+
+    def get_end_effector_pose(self, joint_values=None, base_config=None):
+        """
+        Get the end effector pose for a given configuration.
+
+        If joint_values and base_config are not provided, it uses the current robot state.
+
+        Args:
+            joint_values: Optional list of 8 joint values (torso + 7 arm joints)
+            base_config: Optional [x, y, theta] base configuration
+
+        Returns:
+            pose: End effector pose (geometry_msgs/Pose) in world frame
+        """
+        from geometry_msgs.msg import Pose
+
+        # Use current configuration if not provided
+        if joint_values is None:
+            joint_values = self.get_current_planning_joints()
+            if joint_values is None:
+                rospy.logerr("Failed to get current joint positions")
+                return None
+
+        if base_config is None:
+            base_config = self.get_base_params()
+
+        # Call the eefk function to get the end effector pose in robot frame
+        ee_pos, ee_quat = self.vamp_module.eefk(joint_values)
+
+        # Transform to world frame
+        world_pos, world_quat = self.transform_pose_to_world(
+            [base_config[0], base_config[1], 0], base_config[2], ee_pos, ee_quat
+        )
+
+        # Create pose message
+        pose = Pose()
+        pose.position.x = world_pos[0]
+        pose.position.y = world_pos[1]
+        pose.position.z = world_pos[2]
+        pose.orientation.x = world_quat[0]
+        pose.orientation.y = world_quat[1]
+        pose.orientation.z = world_quat[2]
+        pose.orientation.w = world_quat[3]
+
+        return pose
+
     def _joint_states_callback(self, msg):
         """Callback for joint states messages."""
         # Only save messages with length > 2 to filter out gripper messages
@@ -120,7 +758,9 @@ class Fetch:
             self.joint_states = msg
         else:
             self.joint_states = None
-            rospy.logdebug(f"Ignoring joint state message with only {len(msg.name)} joints")
+            rospy.logdebug(
+                f"Ignoring joint state message with only {len(msg.name)} joints"
+            )
 
     def _init_vamp_planner(self):
         """
@@ -154,11 +794,11 @@ class Fetch:
         except Exception as e:
             rospy.logerr(f"Failed to initialize VAMP planner: {str(e)}")
             raise
-        
+
     def set_base_params(self, theta, x, y):
         """
         Set the base parameters for the Fetch robot.
-        
+
         Args:
             theta (float): Base rotation around z-axis in radians
             x (float): Base x position in meters
@@ -168,22 +808,25 @@ class Fetch:
             self.base_theta = theta
             self.base_x = x
             self.base_y = y
-            
+
             # Update the base parameters in the VAMP module
             self.vamp_module.set_base_params(theta, x, y)
-            
-            rospy.loginfo(f"Set base parameters: theta={theta:.6f}, x={x:.6f}, y={y:.6f}")
+
+            rospy.loginfo(
+                f"Set base parameters: theta={theta:.6f}, x={x:.6f}, y={y:.6f}"
+            )
             return True
         except Exception as e:
             rospy.logerr(f"Failed to set base parameters: {str(e)}")
             import traceback
+
             rospy.logerr(traceback.format_exc())
             return False
-        
+
     def get_base_params(self):
         """
         Get the current base parameters for the Fetch robot.
-        
+
         Returns:
             tuple: (theta, x, y) current base parameters
         """
@@ -208,7 +851,9 @@ class Fetch:
             if joint_name in joint_dict:
                 positions.append(joint_dict[joint_name])
             else:
-                rospy.logerr(f"Joint {joint_name} not found in joint states, The current joints are: {joint_dict}")
+                rospy.logerr(
+                    f"Joint {joint_name} not found in joint states, The current joints are: {joint_dict}"
+                )
                 return None
 
         return positions
@@ -286,55 +931,45 @@ class Fetch:
 
             rospy.logerr(traceback.format_exc())
             return None
-        
+
     def plan_whole_body_motion(self, start_joints, goal_joints, start_base, goal_base):
         """`
         Plan a whole body motion using the multilayer RRTC planner.
-        
+
         Args:
             start_joints: List of 8 joint positions for start configuration
             goal_joints: List of 8 joint positions for goal configuration
             start_base: List of 3 values [x, y, theta] for start base configuration
             goal_base: List of 3 values [x, y, theta] for goal base configuration
-            
+
         Returns:
             dict: Planning results or None if planning failed
         """
         try:
             # Validate input dimensions
             if len(start_joints) != 8 or len(goal_joints) != 8:
-                rospy.logerr(f"Invalid joint dimensions. Expected 8, got {len(start_joints)} and {len(goal_joints)}")
+                rospy.logerr(
+                    f"Invalid joint dimensions. Expected 8, got {len(start_joints)} and {len(goal_joints)}"
+                )
                 return None
-                
+
             if len(start_base) != 3 or len(goal_base) != 3:
-                rospy.logerr(f"Invalid base dimensions. Expected 3, got {len(start_base)} and {len(goal_base)}")
+                rospy.logerr(
+                    f"Invalid base dimensions. Expected 3, got {len(start_base)} and {len(goal_base)}"
+                )
                 return None
-            
+
             start_joints = [round(val, 3) for val in start_joints]
             goal_joints = [round(val, 3) for val in goal_joints]
             start_base = [round(val, 3) for val in start_base]
             goal_base = [round(val, 3) for val in goal_base]
-            
-            # Validate input values
-            self.set_base_params(*start_base)
-            if not self.vamp_module.validate(start_joints, self.env):
-                rospy.loginfo("Start configuration valid")
-            else:
-                rospy.logerr("Start configuration not valid")
-                return
-            self.set_base_params(*goal_base)
-            if not self.vamp_module.validate(goal_joints, self.env):
-                rospy.loginfo("Target configuration valid")
-            else:
-                rospy.logerr("Target configuration not valid")
-                return
-            
+
             rospy.loginfo("Planning whole body motion:")
             rospy.loginfo(f"Start arm config: {start_joints}")
             rospy.loginfo(f"Goal arm config: {goal_joints}")
             rospy.loginfo(f"Start base config: {start_base}")
             rospy.loginfo(f"Goal base config: {goal_base}")
-            
+
             # Use multilayer_rrtc for planning
             result = self.vamp_module.multilayer_rrtc(
                 start_joints,  # arm start config array
@@ -345,13 +980,13 @@ class Fetch:
                 self.plan_settings,
                 self.sampler,
             )
-            
+
             if result.is_successful():
                 rospy.loginfo("Whole body motion planning succeeded!")
-                
+
                 # Get the arm path from the multilayer planning result
                 arm_path = result.arm_result.path
-                
+
                 # Get the base path from the result
                 base_configs = []
                 try:
@@ -360,9 +995,14 @@ class Fetch:
                     for config in base_path:
                         base_configs.append(config.config)
                 except Exception as e:
-                    rospy.logwarn(f"Error extracting base_path: {e}, using alternative method")
+                    rospy.logwarn(
+                        f"Error extracting base_path: {e}, using alternative method"
+                    )
                     # Alternative method to get base path
-                    if hasattr(result.base_result, "path") and result.base_result.path is not None:
+                    if (
+                        hasattr(result.base_result, "path")
+                        and result.base_result.path is not None
+                    ):
                         base_path = result.base_result.path
                         for i in range(len(base_path)):
                             config = base_path[i]
@@ -372,7 +1012,7 @@ class Fetch:
                                 base_configs.append(config.config)
                             else:
                                 base_configs.append(list(config))
-                
+
                 # Convert base_configs to list of lists for whole_body_simplify
                 base_path_list = []
                 for config in base_configs:
@@ -380,7 +1020,7 @@ class Fetch:
                         base_path_list.append(config)
                     else:
                         base_path_list.append(list(config))
-                
+
                 # Convert arm path to a list of lists for whole_body_simplify
                 arm_path_list = []
                 for config in arm_path:
@@ -390,36 +1030,46 @@ class Fetch:
                         arm_path_list.append(config.tolist())
                     else:
                         arm_path_list.append(config.to_list())
-                
-                rospy.loginfo(f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations")
-                
+
+                rospy.loginfo(
+                    f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations"
+                )
+
                 # Use whole_body_simplify instead of regular simplify
                 whole_body_result = self.vamp_module.whole_body_simplify(
-                    arm_path_list, 
-                    base_path_list, 
-                    self.env, 
-                    self.simp_settings, 
-                    self.sampler
+                    arm_path_list,
+                    base_path_list,
+                    self.env,
+                    self.simp_settings,
+                    self.sampler,
                 )
-                
+
                 # Verify that arm and base paths have the same length after simplification
                 if not whole_body_result.validate_paths():
-                    rospy.logwarn("Simplified arm and base paths have different lengths!")
-                    rospy.logwarn(f"Arm path: {len(whole_body_result.arm_result.path)}, Base path: {len(whole_body_result.base_path)}")
+                    rospy.logwarn(
+                        "Simplified arm and base paths have different lengths!"
+                    )
+                    rospy.logwarn(
+                        f"Arm path: {len(whole_body_result.arm_result.path)}, Base path: {len(whole_body_result.base_path)}"
+                    )
                 else:
-                    rospy.loginfo(f"Verified: Arm and base paths both have {len(whole_body_result.arm_result.path)} waypoints")
-                
+                    rospy.loginfo(
+                        f"Verified: Arm and base paths both have {len(whole_body_result.arm_result.path)} waypoints"
+                    )
+
                 # Interpolate both arm and base paths together
                 rospy.loginfo("Interpolating whole-body path...")
                 interpolation_resolution = 32
                 # interpolation_resolution = self.vamp_module.resolution()
                 whole_body_result.interpolate(interpolation_resolution)
-                rospy.loginfo(f"Interpolated with resolution {interpolation_resolution}")
-                
+                rospy.loginfo(
+                    f"Interpolated with resolution {interpolation_resolution}"
+                )
+
                 # Get the interpolated paths
                 arm_path = whole_body_result.arm_result.path
                 base_path = whole_body_result.base_path
-                
+
                 # Extract base configurations as lists
                 base_configs = []
                 for config in base_path:
@@ -429,7 +1079,7 @@ class Fetch:
                         base_configs.append(config.to_list())
                     else:
                         base_configs.append(list(config))
-                
+
                 # Create stats dictionary manually to avoid pandas dependency
                 stats = {
                     "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
@@ -440,9 +1090,10 @@ class Fetch:
                     "planning_graph_size": (
                         sum(result.arm_result.size) if result.arm_result.size else 0
                     ),
-                    "simplification_time_ms": whole_body_result.arm_result.nanoseconds / 1e6
+                    "simplification_time_ms": whole_body_result.arm_result.nanoseconds
+                    / 1e6,
                 }
-                
+
                 # Log statistics
                 rospy.loginfo(
                     f"""Whole body planning statistics:
@@ -454,20 +1105,20 @@ class Fetch:
                     Base Planning Iters: {stats['base_planning_iterations']}
                     Graph States: {stats['planning_graph_size']}"""
                 )
-                
+
                 rospy.loginfo(f"Base path length: {len(base_configs)} waypoints")
                 rospy.loginfo(f"Arm path length: {len(arm_path)} waypoints")
-                
+
                 # Return planning results
                 return {
                     "success": True,
                     "stats": stats,
                     "arm_path": arm_path,
-                    "base_configs": base_configs
+                    "base_configs": base_configs,
                 }
             else:
                 rospy.logwarn("Whole body motion planning failed.")
-                
+
                 # Create stats dictionary for failure case without pandas dependency
                 stats = {
                     "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
@@ -479,31 +1130,32 @@ class Fetch:
                         sum(result.arm_result.size) if result.arm_result.size else 0
                     ),
                 }
-                
+
                 return {
                     "success": False,
                     "stats": stats,
                     "arm_path": None,
-                    "base_configs": None
+                    "base_configs": None,
                 }
         except Exception as e:
             rospy.logerr(f"Error in whole body motion planning: {e}")
             import traceback
+
             rospy.logerr(traceback.format_exc())
             return None
 
     def execute_whole_body_motion(self, arm_path, base_configs, duration=10.0):
         """
         Execute a whole body motion plan with the Fetch robot.
-        
+
         This method sends the planned trajectories to the C++ whole body controller
         for coordinated whole-body motion.
-        
+
         Args:
             arm_path: List of arm joint configurations (8-DOF including torso)
             base_configs: List of base configurations [x, y, theta]
             duration: Total duration of the motion execution in seconds
-            
+
         Returns:
             bool: True if execution succeeded, False otherwise
         """
@@ -512,7 +1164,7 @@ class Fetch:
             if arm_path is None or base_configs is None:
                 rospy.logerr("Cannot execute motion: arm_path or base_configs is None")
                 return False
-            
+
             # Process arm path
             processed_arm_path = []
             for point in arm_path:
@@ -523,22 +1175,22 @@ class Fetch:
                 else:
                     # Assume it has a to_list method
                     processed_arm_path.append(point.to_list())
-            
+
             # Send trajectories to the C++ controller
-            
+
             # Create the arm trajectory message
             arm_traj_msg = JointTrajectory()
             arm_traj_msg.header.stamp = rospy.Time.now()
             arm_traj_msg.joint_names = self.planning_joint_names
-            
+
             # Create the base trajectory message (using joint_names as a placeholder)
             base_traj_msg = JointTrajectory()
             base_traj_msg.header.stamp = rospy.Time.now()
             base_traj_msg.joint_names = ["x", "y", "theta"]  # Base has 3 DOF
-            
+
             # Calculate time spacing for points
             time_step = duration / len(processed_arm_path)
-            
+
             # Add points to both trajectories
             for i in range(len(processed_arm_path)):
                 # Arm point
@@ -546,30 +1198,33 @@ class Fetch:
                 arm_point.positions = processed_arm_path[i]
                 arm_point.time_from_start = rospy.Duration(i * time_step)
                 arm_traj_msg.points.append(arm_point)
-                
+
                 # Base point
                 base_point = JointTrajectoryPoint()
                 base_point.positions = base_configs[i]
                 base_point.time_from_start = rospy.Duration(i * time_step)
                 base_traj_msg.points.append(base_point)
-            
+
             # Publish trajectories
             self.arm_path_pub.publish(arm_traj_msg)
             self.base_path_pub.publish(base_traj_msg)
-            
+
             # Give time for controller to receive and process the message
             rospy.sleep(0.5)
-            
+
             # The C++ controller is handling execution, so we just wait for completion
-            rospy.loginfo(f"Whole body motion execution started, waiting {duration + 2.0} seconds...")
+            rospy.loginfo(
+                f"Whole body motion execution started, waiting {duration + 2.0} seconds..."
+            )
             rospy.sleep(duration + 2.0)  # Add a small buffer time for completion
-            
+
             rospy.loginfo("Whole body motion execution completed")
             return True
-            
+
         except Exception as e:
             rospy.logerr(f"Error in whole body motion execution: {e}")
             import traceback
+
             rospy.logerr(traceback.format_exc())
             return False
 
@@ -1094,7 +1749,7 @@ class Fetch:
             # if current_joints is None:
             #     rospy.logerr("Failed to get current joint positions")
             #     return None
-            
+
             max_attempts = 5  # You can adjust this number based on your needs
             attempt_count = 0
 
@@ -1102,9 +1757,13 @@ class Fetch:
                 current_joints = self.get_current_planning_joints()
                 if current_joints is None:
                     attempt_count += 1
-                    rospy.logwarn(f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})")
+                    rospy.logwarn(
+                        f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})"
+                    )
                     if attempt_count >= max_attempts:
-                        rospy.logerr("Max attempts reached. Failed to get current joint positions")
+                        rospy.logerr(
+                            "Max attempts reached. Failed to get current joint positions"
+                        )
                         return False
                     rospy.sleep(0.5)  # Add a small delay between attempts
 
