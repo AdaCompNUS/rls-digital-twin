@@ -42,16 +42,16 @@ def main():
 
             if key == "w":
                 print("Moving forward...")
-                robot.move_base(0.5, 0.0)  # 50% forward speed
+                robot.move_base(1.5, 0.0)  # 50% forward speed
             elif key == "s":
                 print("Moving backward...")
-                robot.move_base(-0.5, 0.0)  # 50% backward speed
+                robot.move_base(-1.5, 0.0)  # 50% backward speed
             elif key == "a":
                 print("Turning left...")
-                robot.move_base(0.0, 0.5)  # 50% turn left speed
+                robot.move_base(0.0, 1.5)  # 50% turn left speed
             elif key == "d":
                 print("Turning right...")
-                robot.move_base(0.0, -0.5)  # 50% turn right speed
+                robot.move_base(0.0, -1.5)  # 50% turn right speed
             elif key == "q":
                 print("\nQuitting...")
                 break

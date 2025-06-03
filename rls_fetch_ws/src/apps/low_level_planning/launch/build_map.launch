@@ -1,0 +1,24 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="set_base_frame" default="base_link"/>
+  <arg name="set_odom_frame" default="odom"/>
+  <arg name="set_map_frame"  default="map"/>
+
+  <!-- Gmapping -->
+  <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping" args="
+          -configuration_directory $(find low_level_planning)/config
+          -configuration_basename fetch_laser.lua" output="screen">
+    <param name="base_frame" value="$(arg set_base_frame)"/>
+    <param name="odom_frame" value="$(arg set_odom_frame)"/>
+    
+    <param name="map_frame"  value="$(arg set_map_frame)"/>
+    <remap from="scan" to="base_scan"/>
+
+    <rosparam command="load" file="$(find low_level_planning)/config/gmapping_params.yaml" />
+  </node>
+
+  <!-- <group if="$(arg open_rviz)"> 
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find fetch_common)/rviz/moveit.rviz"/>
+  </group> -->
+</launch>

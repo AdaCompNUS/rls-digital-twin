@@ -16,7 +16,8 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import time
 from trac_ik_python.trac_ik import IK
-import math
+import fetch.utils.whole_body_ik_utils as ik_utils
+import fetch.utils.transform_utils as transform_utils
 
 
 class Fetch:
@@ -149,340 +150,10 @@ class Fetch:
         self.costmap = None
         self.costmap_metadata = None
 
-        # Try to load the costmap
-        self._load_costmap(self.costmap_path)
-
-    def _load_costmap(self, costmap_path):
-        try:
-            import os
-
-            if not os.path.exists(costmap_path):
-                rospy.logerr(f"Costmap file not found: {costmap_path}")
-                return False
-
-            rospy.loginfo(f"Loading costmap from {costmap_path}")
-            costmap, metadata = self._load_costmap_file(costmap_path)
-
-            if costmap is not None and metadata is not None:
-                # Explicitly log costmap dimensions to verify loading
-                rospy.loginfo(
-                    f"Successfully loaded costmap: {costmap.shape}, min={np.min(costmap)}, max={np.max(costmap)}"
-                )
-                self.costmap = costmap
-                self.costmap_metadata = metadata
-                return True
-            else:
-                rospy.logerr(f"Failed to load costmap from {costmap_path}")
-                return False
-        except Exception as e:
-            rospy.logerr(f"Error loading costmap: {e}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
-            return False
-
-    def _load_costmap_file(self, costmap_path):
-        """
-        Load a previously generated costmap from file.
-
-        Args:
-            costmap_path: Path to the costmap .npz file
-
-        Returns:
-            tuple: (costmap, metadata) or (None, None) if loading fails
-        """
-        try:
-            import numpy as np
-
-            data = np.load(costmap_path)
-
-            # Extract costmap and metadata
-            costmap = data["costmap"]
-
-            # Create metadata dictionary
-            metadata = {
-                "resolution": float(data["resolution"]),
-                "origin_x": float(data["origin_x"]),
-                "origin_y": float(data["origin_y"]),
-                "width": int(data["width"]),
-                "height": int(data["height"]),
-                "max_distance": float(data["max_distance"]),
-            }
-
-            # Check if valid_area_mask exists in the data
-            if "valid_area_mask" in data:
-                metadata["valid_area_mask"] = data["valid_area_mask"]
-
-            return costmap, metadata
-
-        except Exception as e:
-            rospy.logerr(f"Error loading costmap file: {e}")
-            return None, None
-
-    def world_to_grid(self, world_x, world_y):
-        """
-        Convert world coordinates to grid coordinates.
-
-        Args:
-            world_x, world_y: World coordinates
-
-        Returns:
-            grid_x, grid_y: Grid coordinates
-        """
-        if self.costmap_metadata is None:
-            return None, None
-
-        grid_x = int(
-            (world_x - self.costmap_metadata["origin_x"])
-            / self.costmap_metadata["resolution"]
-        )
-        grid_y = int(
-            (world_y - self.costmap_metadata["origin_y"])
-            / self.costmap_metadata["resolution"]
-        )
-        return grid_x, grid_y
-
-    def grid_to_world(self, grid_x, grid_y):
-        """
-        Convert grid coordinates to world coordinates.
-
-        Args:
-            grid_x, grid_y: Grid coordinates
-
-        Returns:
-            world_x, world_y: World coordinates
-        """
-        if self.costmap_metadata is None:
-            return None, None
-
-        world_x = (
-            self.costmap_metadata["origin_x"]
-            + grid_x * self.costmap_metadata["resolution"]
-        )
-        world_y = (
-            self.costmap_metadata["origin_y"]
-            + grid_y * self.costmap_metadata["resolution"]
-        )
-        return world_x, world_y
-
-    def find_valid_base_positions(
-        self, ee_pose, manipulation_radius=1.0, cost_threshold=0.3
-    ):
-        """
-        Find valid base positions for the robot by intersecting the costmap with a circle
-        representing the manipulation range around the end effector.
-
-        Args:
-            ee_pose: End effector pose (geometry_msgs/Pose)
-            manipulation_radius: Radius of the manipulation range in meters
-            cost_threshold: Minimum cost value to consider a cell valid (0-1)
-
-        Returns:
-            valid_positions: List of valid base positions in world coordinates with costs and orientation scores
-            or None if costmap is not available
-        """
-        import numpy as np
-
-        if self.costmap is None or self.costmap_metadata is None:
-            rospy.logwarn("Costmap not available for finding valid base positions")
-            return None
-
-        # Convert end effector position to grid coordinates
-        ee_grid_x, ee_grid_y = self.world_to_grid(
-            ee_pose.position.x, ee_pose.position.y
-        )
-
-        if ee_grid_x is None or ee_grid_y is None:
-            rospy.logwarn("Failed to convert end effector position to grid coordinates")
-            return None
-
-        # Make sure the end effector is within the costmap bounds
-        if (
-            ee_grid_x < 0
-            or ee_grid_x >= self.costmap_metadata["width"]
-            or ee_grid_y < 0
-            or ee_grid_y >= self.costmap_metadata["height"]
-        ):
-            rospy.logwarn(
-                f"End effector position ({ee_pose.position.x}, {ee_pose.position.y}) is outside costmap bounds"
-            )
-            return None
-
-        # Create 2D grid coordinates
-        y_grid, x_grid = np.mgrid[
-            0 : self.costmap_metadata["height"], 0 : self.costmap_metadata["width"]
-        ]
-
-        # Calculate distances from each grid cell to end effector position
-        distances = (
-            np.sqrt((x_grid - ee_grid_x) ** 2 + (y_grid - ee_grid_y) ** 2)
-            * self.costmap_metadata["resolution"]
-        )
-
-        # Create circle mask (cells within manipulation range)
-        circle_mask = distances <= manipulation_radius
-
-        # Create valid cells mask (cells with cost >= threshold and not NaN)
-        valid_cells = (self.costmap >= cost_threshold) & ~np.isnan(self.costmap)
-
-        # Combine circle mask and valid cells mask to get final valid positions
-        valid_mask = circle_mask & valid_cells
-
-        # Convert valid grid positions to world coordinates
-        valid_positions = []
-        for y in range(self.costmap_metadata["height"]):
-            for x in range(self.costmap_metadata["width"]):
-                if valid_mask[y, x]:
-                    world_x, world_y = self.grid_to_world(x, y)
-
-                    # Calculate orientation towards the end effector
-                    dx = ee_pose.position.x - world_x
-                    dy = ee_pose.position.y - world_y
-                    theta = math.atan2(dy, dx)
-
-                    # Get the cost value (lower is better for sampling)
-                    cost_value = self.costmap[y, x]
-
-                    valid_positions.append((world_x, world_y, cost_value, theta))
-
-        if not valid_positions:
-            rospy.logwarn("No valid base positions found")
-        else:
-            rospy.loginfo(f"Found {len(valid_positions)} valid base positions")
-
-        return valid_positions
-
-    def generate_ik_seed(self, pose, manipulation_radius=1.0):
-        """
-        Generate a deterministic seed for IK using costmap for base position.
-        Always selects the best (lowest cost) base position from the costmap.
-
-        Args:
-            pose: Target end effector pose (geometry_msgs/Pose)
-            manipulation_radius: Radius of manipulation for base sampling
-
-        Returns:
-            seed: Deterministic seed for IK
-        """
-
-        rospy.loginfo("Generating deterministic seed for IK...")
-
-        # Initialize the seed array with midpoints as fallback
-        seed = [
-            (l + u) / 2.0 for l, u in zip(self.lower_limits, self.upper_limits)
-        ]  # noqa: E741
-
-        # Try to use costmap for base position sampling
-        if self.costmap is not None and self.costmap_metadata is not None:
-            # Find valid base positions
-            valid_positions = self.find_valid_base_positions(
-                pose, manipulation_radius, cost_threshold=0.3
-            )
-
-            if valid_positions and len(valid_positions) > 0:
-                # Sort positions by cost (ascending order)
-                sorted_positions = sorted(valid_positions, key=lambda pos: pos[2])
-
-                # Take the position with lowest cost
-                best_position = sorted_positions[0]
-                base_x, base_y, _, base_theta = best_position
-
-                # Update the first 3 elements of the seed (base position and orientation)
-                seed[0] = base_x
-                seed[1] = base_y
-                seed[2] = base_theta
-
-                rospy.loginfo(
-                    f"Using best base position: [{base_x:.4f}, {base_y:.4f}, {base_theta:.4f}]"
-                )
-        # Use midpoint values for arm joints (remaining DOFs)
-        for i in [5, 6, 7, 8, 9, 10]:
-            # seed[i] = (lower[i] + upper[i]) / 2.0
-            seed[i] = np.random.uniform(self.lower_limits[i], self.upper_limits[i])
-        rospy.loginfo(
-            f"Deterministic seed generated: {[round(val, 3) for val in seed]}"
-        )
-        return seed
-
-    def transform_pose_to_world(self, base_pos, base_yaw, ee_pos, ee_quat):
-        """
-        Transform end effector pose from robot base frame to world frame.
-
-        Args:
-            base_pos: [x, y, z] position of the robot base in world frame
-            base_yaw: Yaw angle of the robot base in world frame
-            ee_pos: [x, y, z] position of the end effector in robot base frame
-            ee_quat: [x, y, z, w] quaternion of the end effector in robot base frame
-
-        Returns:
-            world_pos: [x, y, z] position of the end effector in world frame
-            world_quat: [x, y, z, w] quaternion of the end effector in world frame
-        """
-        from scipy.spatial.transform import Rotation as R
-        import numpy as np
-
-        # Create base rotation matrix from yaw angle
-        base_rot = R.from_euler("z", base_yaw)
-        base_rot_matrix = base_rot.as_matrix()
-
-        # Transform end effector position to world frame
-        ee_pos_rotated = base_rot_matrix @ np.array(ee_pos)
-        world_pos = np.array(
-            [
-                base_pos[0] + ee_pos_rotated[0],
-                base_pos[1] + ee_pos_rotated[1],
-                ee_pos_rotated[2],  # Assuming base_pos[2] = 0 (z is up)
-            ]
-        )
-
-        # Transform end effector orientation to world frame
-        ee_rot = R.from_quat([ee_quat[0], ee_quat[1], ee_quat[2], ee_quat[3]])
-        base_rot_quat = base_rot.as_quat()  # scipy uses xyzw format
-        base_rot = R.from_quat(base_rot_quat)
-        world_rot = base_rot * ee_rot
-        world_quat = world_rot.as_quat()  # xyzw format
-
-        return world_pos, world_quat
-
-    def transform_pose_to_base(self, world_pos, world_quat, base_pos, base_yaw):
-        """
-        Transform end effector pose from world frame to robot base frame.
-
-        Args:
-            world_pos: [x, y, z] position of the end effector in world frame
-            world_quat: [x, y, z, w] quaternion of the end effector in world frame
-            base_pos: [x, y, z] position of the robot base in world frame
-            base_yaw: Yaw angle of the robot base in world frame
-
-        Returns:
-            ee_pos: [x, y, z] position of the end effector in robot base frame
-            ee_quat: [x, y, z, w] quaternion of the end effector in robot base frame
-        """
-        from scipy.spatial.transform import Rotation as R
-        import numpy as np
-
-        # Create inverse base rotation
-        base_rot = R.from_euler("z", base_yaw)
-        base_rot_inv = base_rot.inv()
-
-        # Translate world position to base origin
-        pos_rel_to_base = np.array(
-            [
-                world_pos[0] - base_pos[0],
-                world_pos[1] - base_pos[1],
-                world_pos[2],  # Assuming base_pos[2] = 0
-            ]
-        )
-
-        # Rotate to base frame
-        ee_pos = base_rot_inv.apply(pos_rel_to_base)
-
-        # Transform orientation
-        world_rot = R.from_quat(world_quat)
-        ee_rot = base_rot_inv * world_rot
-        ee_quat = ee_rot.as_quat()
-
-        return ee_pos, ee_quat
+        # Try to load the costmap using the utility function
+        self.costmap, self.costmap_metadata = ik_utils.load_costmap(self.costmap_path)
+        if self.costmap is None:
+            rospy.logwarn(f"Failed to load costmap from {self.costmap_path}. Proceeding without costmap features.")
 
     def solve_whole_body_ik(
         self, target_pose, max_attempts=100, manipulation_radius=1.0
@@ -536,8 +207,20 @@ class Fetch:
             sample_count += 1
             rospy.loginfo(f"IK attempt {sample_count}/{max_attempts}")
 
-            # Generate a deterministic seed
-            seed = self.generate_ik_seed(pose, manipulation_radius)
+            # Generate a deterministic seed using the utility function
+            seed = ik_utils.generate_ik_seed(
+                pose,
+                self.costmap,
+                self.costmap_metadata,
+                self.lower_limits,
+                self.upper_limits,
+                manipulation_radius
+            )
+            # Handle case where seed generation failed (e.g., invalid limits)
+            if seed is None:
+                 rospy.logerr("Failed to generate IK seed. Aborting IK attempt.")
+                 continue # Or return None, depending on desired behavior
+
             rospy.loginfo(
                 f"Initial configuration (seed): {[round(val, 3) for val in seed]}"
             )
@@ -734,8 +417,8 @@ class Fetch:
         # Call the eefk function to get the end effector pose in robot frame
         ee_pos, ee_quat = self.vamp_module.eefk(joint_values)
 
-        # Transform to world frame
-        world_pos, world_quat = self.transform_pose_to_world(
+        # Transform to world frame using the utility function
+        world_pos, world_quat = transform_utils.transform_pose_to_world(
             [base_config[0], base_config[1], 0], base_config[2], ee_pos, ee_quat
         )
 
@@ -1608,129 +1291,6 @@ class Fetch:
 
             rospy.logerr(traceback.format_exc())
             return [], int((time.time() - start_time) * 1e6)
-
-    def _transform_points(self, points, source_frame, target_frame):
-        """
-        Transform a set of points from source frame to target frame using NumPy vectorization.
-
-        This optimized version replaces the point-by-point TF2 transformation with a much faster
-        vectorized matrix operation that processes all points at once.
-
-        Args:
-            points: Nx3 array or list of points
-            source_frame: Source frame ID (e.g., "world", "map")
-            target_frame: Target frame ID (e.g., "base_link")
-
-        Returns:
-            Nx3 array of transformed points
-        """
-        import numpy as np
-        from time import time
-
-        start_time = time()
-
-        # Convert points to numpy array if not already
-        if not isinstance(points, np.ndarray):
-            points = np.array(points, dtype=np.float64)
-
-        # Handle empty input
-        if points.size == 0:
-            return points
-
-        # Log transformation details
-        rospy.loginfo(
-            f"Fast transforming {len(points)} points from '{source_frame}' to '{target_frame}'"
-        )
-
-        try:
-            # Get the latest transform
-            transform = self.tf_buffer.lookup_transform(
-                target_frame, source_frame, rospy.Time(0), rospy.Duration(5.0)
-            )
-
-            # Extract translation and rotation from transform
-            translation = transform.transform.translation
-            rotation = transform.transform.rotation
-
-            # Log transform information for debugging
-            rospy.loginfo(
-                f"Translation: [{translation.x}, {translation.y}, {translation.z}]"
-            )
-            rospy.loginfo(
-                f"Rotation: [{rotation.x}, {rotation.y}, {rotation.z}, {rotation.w}]"
-            )
-
-            # Convert quaternion to rotation matrix (more efficient than individual transforms)
-            x, y, z, w = rotation.x, rotation.y, rotation.z, rotation.w
-
-            # Precompute common terms to optimize the calculation
-            xx, xy, xz = x * x, x * y, x * z
-            yy, yz, zz = y * y, y * z, z * z
-            wx, wy, wz = w * x, w * y, w * z
-
-            # Build rotation matrix
-            rot_matrix = np.array(
-                [
-                    [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
-                    [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
-                    [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
-                ],
-                dtype=np.float64,
-            )
-
-            # Create translation vector
-            trans_vector = np.array(
-                [translation.x, translation.y, translation.z], dtype=np.float64
-            )
-
-            # Process points in chunks to avoid memory issues with very large point clouds
-            chunk_size = 500000  # Adjust based on available memory
-            n_points = len(points)
-            num_chunks = int(np.ceil(n_points / chunk_size))
-            result = np.zeros_like(points)
-
-            for i in range(num_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, n_points)
-
-                # Get current chunk
-                chunk = points[start_idx:end_idx]
-
-                # Apply transformation to chunk: R * points + t
-                result[start_idx:end_idx] = np.dot(chunk, rot_matrix.T) + trans_vector
-
-                # Log progress for large point clouds
-                if num_chunks > 1 and (i % 10 == 0 or i == num_chunks - 1):
-                    points_processed = end_idx
-                    percentage = (points_processed / n_points) * 100
-                    elapsed = time() - start_time
-                    rate = points_processed / elapsed if elapsed > 0 else 0
-                    rospy.loginfo(
-                        f"Transformed {points_processed}/{n_points} points ({percentage:.1f}%), "
-                        f"Rate: {rate:.1f} points/sec"
-                    )
-
-            total_time = time() - start_time
-            rospy.loginfo(
-                f"Transformation complete: {n_points} points in {total_time:.3f} seconds "
-                f"({n_points/total_time:.1f} points/sec)"
-            )
-
-            return result
-
-        except (
-            tf2_ros.LookupException,
-            tf2_ros.ConnectivityException,
-            tf2_ros.ExtrapolationException,
-        ) as e:
-            rospy.logerr(f"Failed to lookup transform: {e}")
-            return points  # Return original points if transform fails
-        except Exception as e:
-            rospy.logerr(f"Error in point transformation: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
-            return points  # Return original points on error
 
     def send_joint_values(self, target_joints, duration=5.0):
         """
