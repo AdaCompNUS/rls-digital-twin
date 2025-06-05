@@ -437,13 +437,13 @@ class Fetch:
     def _joint_states_callback(self, msg):
         """Callback for joint states messages."""
         # Only save messages with length > 2 to filter out gripper messages
-        if len(msg.name) > 3:
+        if msg is not None and len(msg.name) > 3:
             self.joint_states = msg
-        else:
-            self.joint_states = None
-            rospy.logdebug(
-                f"Ignoring joint state message with only {len(msg.name)} joints"
-            )
+        # else:
+        #     self.joint_states = None
+        #     rospy.logdebug(
+        #         f"Ignoring joint state message with only {len(msg.name)} joints"
+        #     )
 
     def _init_vamp_planner(self):
         """
@@ -587,7 +587,7 @@ class Fetch:
                 )
 
                 # Interpolate path
-                interpolate = 128
+                interpolate = 64
                 simple.path.interpolate(interpolate)
 
                 # Convert path to trajectory points
