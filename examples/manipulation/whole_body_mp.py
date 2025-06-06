@@ -29,38 +29,7 @@ PCD_FILES = [
 
 # Test case definitions for different environments
 TEST_CASES = {
-    "workstation": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.37, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
-        "target_base": [-2.80515, 0.03805, -1.423],  # [x, y, theta]
-    },
-    "table": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.2, 0.70, -0.50, -1.0, 1.2, 0.8, 0.2, 1.5],
-        "target_base": [-1.25, 1.20, 0.85],
-    },
-    "open_kitchen": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.37, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
-        "target_base": [-3.70515, -2.4, -1.423],
-    },
-    "coffee_table": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.30, 0.85, -0.35, -1.2, 1.4, 0.5, -0.1, 1.9],
-        "target_base": [3.65, 0.75, -0.65],
-    },
-    "sofa": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.25, 0.90, -0.30, -1.3, 1.0, 0.7, 0.1, 2.0],
-        "target_base": [1.95, 0.90, -0.62],
-    },
-    "test": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "target_joints": [0.2, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
-        "target_base": [-0.0856903180037, -0.542703287224, 0.0],
-    },
     "open_fridge": {
-        "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
         "target_joints": [0.37, 0.29470240364379885,
             1.1211147828796386,
             -1.2186898401245116,
@@ -68,7 +37,8 @@ TEST_CASES = {
             1.202369851473999,
             -1.8404571460021972,
             1.7227418721292114],
-        "target_base": [-4.296061810063319, -2.2113403585598902, -1.8],  # [x, y, theta]
+        "position": [-4.296061810063319, -2.2113403585598902, 0.0],
+        "orientation": [0.0, 0.0, -0.9413909035755281, 0.3373176050330768]
     }
 }
 
@@ -218,6 +188,20 @@ def main():
     test_case = TEST_CASES[target_env]
     rospy.loginfo(f"Selected environment: {target_env}")
 
+    # Convert quaternion orientation to target_base format
+    position = test_case["position"]
+    orientation = test_case["orientation"]
+    
+    # Extract x, y from position
+    x, y, z = position
+    
+    # Convert quaternion to yaw
+    qx, qy, qz, qw = orientation
+    _, _, theta = tf.transformations.euler_from_quaternion([qx, qy, qz, qw])
+    
+    # Create target_base in the expected [x, y, theta] format
+    target_base = [x, y, theta]
+
     # Update current base position from TF
     current_base = get_current_base_pose(robot)
     rospy.loginfo(
@@ -294,7 +278,6 @@ def main():
 
     # Get target configuration
     target_joints = test_case["target_joints"]
-    target_base = test_case["target_base"]
 
     # Log target configuration
     rospy.loginfo("Target joint configuration:")

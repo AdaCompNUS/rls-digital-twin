@@ -39,7 +39,7 @@ slack_obstacle_weight: 200.0
 
 # Obstacle avoidance parameters
 lidar_max_range: 0.5  # Maximum range to consider for obstacle detection (meters)
-safe_distance: 0.2    # Minimum safe distance from obstacles (meters)
+safe_distance: 0.15    # Minimum safe distance from obstacles (meters)
 voxel_size: 0.2       # Size of voxels for point cloud clustering (meters)
 max_obstacle_points: 10  # Maximum number of obstacle points to consider
 obstacle_weight: 100.0   # Weight for obstacle avoidance constraints
