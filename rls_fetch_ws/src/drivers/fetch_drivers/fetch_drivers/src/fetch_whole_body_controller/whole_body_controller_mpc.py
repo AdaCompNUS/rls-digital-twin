@@ -374,7 +374,6 @@ class WholeBodyController:
         
         # State tracking
         self.joint_states = None
-        self.base_pose = None
         self.arm_traj = []
         self.base_traj = []
         self.merged_traj = []
@@ -393,6 +392,10 @@ class WholeBodyController:
         self.params = self.load_parameters()
         self.mpc = WholeBodyMPC(self.params)
         
+        # Frame names
+        self.map_frame = self.params.get('map_frame', 'map')
+        self.base_frame = self.params.get('base_frame', 'base_link')
+        
         # ROS interfaces
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
         self.joint_vel_pub = rospy.Publisher(
@@ -404,7 +407,6 @@ class WholeBodyController:
         
         # Subscribe to sensor topics
         rospy.Subscriber('/joint_states', JointState, self.joint_cb)
-        rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, self.amcl_pose_cb)
         rospy.Subscriber('/base_scan', LaserScan, self.lidar_cb)
         
         # Subscribe to trajectory topics
@@ -450,25 +452,34 @@ class WholeBodyController:
             'obstacle_weight': rospy.get_param('~obstacle_weight', 100.0),
             'slack_obstacle_weight': rospy.get_param('~slack_obstacle_weight', 200.0),
             'gamma_k': rospy.get_param('~gamma_k', 0.1),  # CBF decay rate
-            'debug': rospy.get_param('~debug', True)
+            'debug': rospy.get_param('~debug', True),
+            'map_frame': rospy.get_param('~map_frame', 'map'),
+            'base_frame': rospy.get_param('~base_frame', 'base_link')
         }
+
+    def get_base_pose_from_tf(self):
+        """Get robot pose from TF"""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame,
+                self.base_frame,
+                rospy.Time(0),
+                rospy.Duration(0.1)
+            )
+            
+            pos = transform.transform.translation
+            q = transform.transform.rotation
+            _, _, yaw = tf_trans.euler_from_quaternion([q.x, q.y, q.z, q.w])
+            
+            return [pos.x, pos.y, yaw]
+            
+        except:
+            return None
 
     def joint_cb(self, msg):
         # Only process messages with length > 2 to filter out gripper messages
         if len(msg.name) > 2:
             self.joint_states = dict(zip(msg.name, msg.position))
-        else:
-            rospy.logdebug(f"Ignoring joint state message with only {len(msg.name)} joints")
-
-    def amcl_pose_cb(self, msg):
-        """Callback for AMCL pose messages"""
-        pos = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-        _, _, yaw = tf_trans.euler_from_quaternion([q.x, q.y, q.z, q.w])
-        self.base_pose = [pos.x, pos.y, yaw]
-        
-        if self.params['debug']:
-            rospy.logdebug(f"AMCL Pose updated: x={pos.x:.2f}, y={pos.y:.2f}, yaw={yaw:.2f}")
 
     def lidar_cb(self, msg):
         """Store the latest lidar scan"""
@@ -565,9 +576,10 @@ class WholeBodyController:
                 centroid = (x_sum / count, y_sum / count)
                 obstacle_positions.append(centroid)
             
-            # Sort by distance to robot (if base_pose is available)
-            if self.base_pose is not None:
-                robot_x, robot_y, _ = self.base_pose
+            # Sort by distance to robot
+            current_base_pose = self.get_base_pose_from_tf()
+            if current_base_pose is not None:
+                robot_x, robot_y, _ = current_base_pose
                 obstacle_positions.sort(key=lambda p: (p[0] - robot_x)**2 + (p[1] - robot_y)**2)
             
             # Keep only the closest obstacles
@@ -580,17 +592,9 @@ class WholeBodyController:
             # Publish visualization
             self.publish_obstacle_markers()
             self.publish_point_cloud(points_map)
-            
-            if self.params['debug']:
-                rospy.logdebug(f"Detected {len(obstacle_positions)} obstacle voxels")
                 
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-            rospy.logwarn(f"TF Error: {e}")
-        except Exception as e:
-            rospy.logerr(f"Error processing lidar data: {e}")
-            if self.params['debug']:
-                import traceback
-                rospy.logerr(traceback.format_exc())
+        except:
+            pass
 
     def publish_obstacle_markers(self):
         """Publish visualization markers for detected obstacles"""
@@ -701,7 +705,12 @@ class WholeBodyController:
         rospy.loginfo("Starting trajectory execution with CBF-based obstacle avoidance")
 
     def get_current_state(self):
-        if self.joint_states is None or self.base_pose is None:
+        if self.joint_states is None:
+            return None
+            
+        # Get base pose from TF
+        base_pose = self.get_base_pose_from_tf()
+        if base_pose is None:
             return None
             
         joints = [
@@ -712,7 +721,7 @@ class WholeBodyController:
                 'forearm_roll_joint', 'wrist_flex_joint', 'wrist_roll_joint'
             ]]
         ]
-        return np.concatenate([self.base_pose, joints])
+        return np.concatenate([base_pose, joints])
 
     def find_nearest_waypoint(self, current_state):
         """Find the index of the waypoint closest to the current base position and orientation"""
@@ -754,11 +763,7 @@ class WholeBodyController:
         return ref
 
     def predict_obstacle_trajectories(self):
-        """Generate predicted obstacle trajectories for the CBF constraints
-        
-        For now, this assumes static obstacles, but you could implement more advanced
-        prediction methods that consider obstacle velocity or use learned models.
-        """
+        """Generate predicted obstacle trajectories for the CBF constraints"""
         predicted_obstacles = []
         
         for obs_pos in self.obstacle_positions:
@@ -789,7 +794,6 @@ class WholeBodyController:
         # Get current state
         current_state = self.get_current_state()
         if current_state is None:
-            rospy.logwarn("Cannot get current state, skipping control iteration")
             return
         
         # Find nearest waypoint

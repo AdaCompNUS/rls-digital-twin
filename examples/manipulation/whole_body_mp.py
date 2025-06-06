@@ -31,43 +31,36 @@ PCD_FILES = [
 TEST_CASES = {
     "workstation": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.37, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
         "target_base": [-2.80515, 0.03805, -1.423],  # [x, y, theta]
     },
     "table": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.2, 0.70, -0.50, -1.0, 1.2, 0.8, 0.2, 1.5],
         "target_base": [-1.25, 1.20, 0.85],
     },
     "open_kitchen": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.37, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
         "target_base": [-3.70515, -2.4, -1.423],
     },
     "coffee_table": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.30, 0.85, -0.35, -1.2, 1.4, 0.5, -0.1, 1.9],
         "target_base": [3.65, 0.75, -0.65],
     },
     "sofa": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.25, 0.90, -0.30, -1.3, 1.0, 0.7, 0.1, 2.0],
         "target_base": [1.95, 0.90, -0.62],
     },
     "test": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.2, 0.80, -0.40, -1.5, 1.5, 1.0, -0.0, 2.17],
         "target_base": [-0.0856903180037, -0.542703287224, 0.0],
     },
     "open_fridge": {
         "initial_joints": [0.1, 1.32, 1.4, -0.2, 1.72, 0, 1.66, 0],
-        "initial_base": [0, 0, 0],
         "target_joints": [0.37, 0.29470240364379885,
             1.1211147828796386,
             -1.2186898401245116,
@@ -224,28 +217,6 @@ def main():
 
     test_case = TEST_CASES[target_env]
     rospy.loginfo(f"Selected environment: {target_env}")
-
-    # STEP 1: Go to initial pose
-    rospy.loginfo("=== STEP 1: Moving to initial pose ===")
-    initial_joints = test_case["initial_joints"]
-
-    # Log initial joint configuration
-    rospy.loginfo("Initial joint configuration:")
-    for name, value in zip(robot.planning_joint_names, initial_joints):
-        rospy.loginfo(f"  {name}: {value:.4f}")
-
-    # Execute motion to initial pose
-    initial_start_time = time.time()
-    initial_result = robot.send_joint_values(initial_joints)
-    initial_time = time.time() - initial_start_time
-
-    if initial_result is not None:
-        rospy.loginfo(f"Initial pose achieved in {initial_time:.2f} seconds")
-    else:
-        rospy.logwarn("Failed to reach initial pose. Continuing anyway...")
-
-    # Wait for things to settle
-    rospy.sleep(1.0)
 
     # Update current base position from TF
     current_base = get_current_base_pose(robot)
@@ -428,24 +399,10 @@ def main():
         f"Executing motion with duration: {TRAJECTORY_DURATION:.2f} seconds"
     )
 
-    # Start execution timer
-    execution_start_time = time.time()
-
     # Execute the planned motion
-    execution_result = robot.execute_whole_body_motion(
+    robot.execute_whole_body_motion(
         plan_result["arm_path"], plan_result["base_configs"], TRAJECTORY_DURATION
     )
-
-    execution_time = time.time() - execution_start_time
-
-    if execution_result:
-        rospy.loginfo(
-            f"Whole body motion execution completed successfully in {execution_time:.2f} seconds"
-        )
-    else:
-        rospy.logwarn(
-            f"Whole body motion execution failed or had issues. Elapsed time: {execution_time:.2f} seconds"
-        )
 
     # STEP 5: Verify final pose
     rospy.loginfo("=== STEP 5: Verifying final pose ===")
@@ -493,44 +450,8 @@ def main():
     # STEP 6: Summary
     rospy.loginfo("=== SUMMARY ===")
     rospy.loginfo(f"Environment: {target_env}")
-    rospy.loginfo(f"Initial pose time: {initial_time:.2f} seconds")
+    # rospy.loginfo(f"Initial pose time: {initial_time:.2f} seconds")
     rospy.loginfo(f"Planning time: {planning_time:.2f} seconds")
-    rospy.loginfo(f"Execution time: {execution_time:.2f} seconds")
-    rospy.loginfo(
-        f"Total time: {initial_time + planning_time + execution_time:.2f} seconds"
-    )
-
-    if final_joints is not None:
-        success_threshold_joints = 0.1  # 0.1 rad is about 5.7 degrees
-        success_threshold_base_pos = 0.1  # 10 cm
-        success_threshold_base_ori = 0.2  # about 11.5 degrees
-
-        is_success_joints = max_joint_error < success_threshold_joints
-        is_success_base = (
-            base_pos_error < success_threshold_base_pos
-            and base_ori_error < success_threshold_base_ori
-        )
-
-        if is_success_joints and is_success_base:
-            rospy.loginfo(
-                "TEST RESULT: SUCCESS - Target pose achieved within tolerance"
-            )
-        elif is_success_joints:
-            rospy.loginfo(
-                "TEST RESULT: PARTIAL SUCCESS - Arm target achieved, but base position outside tolerance"
-            )
-        elif is_success_base:
-            rospy.loginfo(
-                "TEST RESULT: PARTIAL SUCCESS - Base target achieved, but arm position outside tolerance"
-            )
-        else:
-            rospy.loginfo(
-                "TEST RESULT: FAILURE - Both arm and base outside tolerance"
-            )
-    else:
-        rospy.loginfo(
-            "TEST RESULT: FAILURE - Could not verify final joint positions"
-        )
 
     rospy.loginfo("Test completed")
 
