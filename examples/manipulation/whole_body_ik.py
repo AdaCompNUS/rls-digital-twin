@@ -512,14 +512,14 @@ def main():
         return
 
     try:
-        # STEP 1: Move to initial pose
+        # STEP 1: Set up collision environment
+        setup_collision_environment(robot)
+        
+        # STEP 2: Move to initial pose
         if not move_to_initial_pose(robot):
             rospy.logwarn(
                 "Failed to reach initial pose. Proceeding with test anyway..."
             )
-
-        # STEP 2: Set up collision environment
-        setup_collision_environment(robot)
 
         # STEP 3: Run the selected IK test
         test_case = TEST_CASES[TEST_CASE_INDEX]
