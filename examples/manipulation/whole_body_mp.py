@@ -38,7 +38,7 @@ TEST_CASES = {
             -1.8404571460021972,
             1.7227418721292114],
         "position": [-4.296061810063319, -2.2113403585598902, 0.0],
-        "orientation": [0.0, 0.0, -0.9413909035755281, 0.3373176050330768]
+        "orientation": [0.0, 0.0, -0.895797459720963, 0.4444624969077478]
     }
 }
 
@@ -198,6 +198,7 @@ def main():
     # Convert quaternion to yaw
     qx, qy, qz, qw = orientation
     _, _, theta = tf.transformations.euler_from_quaternion([qx, qy, qz, qw])
+    theta=-1.8
     
     # Create target_base in the expected [x, y, theta] format
     target_base = [x, y, theta]
