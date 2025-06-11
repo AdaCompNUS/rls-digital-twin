@@ -18,6 +18,7 @@ import time
 from trac_ik_python.trac_ik import IK
 import fetch.utils.whole_body_ik_utils as ik_utils
 import fetch.utils.transform_utils as transform_utils
+import tf.transformations
 
 
 class Fetch:
@@ -25,7 +26,7 @@ class Fetch:
     Core class for controlling the Fetch robot.
     """
 
-    def __init__(self):
+    def __init__(self, urdf_path="resources/fetch_ext/fetch ext.urdf", costmap_path="resources/costmap.npz"):
         """Initialize the Fetch robot interface."""
         try:
             rospy.init_node("fetch_controller", anonymous=True)
@@ -122,7 +123,6 @@ class Fetch:
 
         try:
             # Load URDF for IK
-            urdf_path = "resources/fetch_ext/fetch ext.urdf"
             with open(urdf_path, "r") as f:
                 self.urdf_str = f.read()
 
@@ -146,7 +146,7 @@ class Fetch:
             rospy.logerr(traceback.format_exc())
 
         # Initialize default costmap path
-        self.costmap_path = "resources/costmap.npz"
+        self.costmap_path = costmap_path
         self.costmap = None
         self.costmap_metadata = None
 
@@ -506,21 +506,29 @@ class Fetch:
             rospy.logerr(traceback.format_exc())
             return False
 
-    def get_base_params(self):
+    def get_base_params(self, world_frame='map', robot_base_frame='base_link'):
         """
-        Get the current base parameters for the Fetch robot.
-
+        Get the current base parameters from the ROS TF tree.
+        This is now the single source of truth for the robot's current pose.
+        Args:
+            world_frame (str): The name of the fixed world frame (e.g., 'map').
+            robot_base_frame (str): The name of the robot's base frame (e.g., 'base_link').
         Returns:
-            tuple: (theta, x, y) current base parameters
+            tuple: (theta, x, y) current base parameters.
         """
-        try:
-            theta = self.vamp_module.get_base_theta()
-            x = self.vamp_module.get_base_x()
-            y = self.vamp_module.get_base_y()
-            return (theta, x, y)
-        except Exception as e:
-            rospy.logerr(f"Failed to get base parameters: {str(e)}")
-            return (self.base_theta, self.base_x, self.base_y)
+        # <--- MODIFIED: This entire method is updated to use TF.
+        # Lookup the transform from the world frame to the robot's base
+        transform = self.tf_buffer.lookup_transform(
+            world_frame, robot_base_frame, rospy.Time(0), rospy.Duration(1.0)
+        )
+        trans = transform.transform.translation
+        rot = transform.transform.rotation
+        # Convert quaternion to Euler angles to get the yaw
+        quaternion = [rot.x, rot.y, rot.z, rot.w]
+        euler = tf.transformations.euler_from_quaternion(quaternion)
+        yaw = euler[2]  # theta
+        # Return in the (theta, x, y) order expected by set_base_params and VAMP
+        return (yaw, trans.x, trans.y)
 
     def get_current_planning_joints(self):
         """Get current joint positions for planning (8-DOF including torso)."""
@@ -540,6 +548,45 @@ class Fetch:
                 return None
 
         return positions
+    
+    def get_camera_pose(self, camera_frame='head_camera_rgb_optical_frame', world_frame='map'):
+        """
+        Get the current pose of a specified camera directly in the world frame using TF.
+        Args:
+            camera_frame (str): The name of the camera's TF frame.
+            world_frame (str): The name of the world's TF frame (e.g., 'map').
+        Returns:
+            numpy.ndarray: 4x4 transformation matrix representing the pose of the camera 
+                        in the world frame.
+        """
+        from tf.transformations import quaternion_matrix
+        
+        rospy.loginfo(f"Attempting to get pose of '{camera_frame}' in frame '{world_frame}'")
+        
+        # Directly look up the transform from the world to the camera.
+        # TF2 handles the entire chain: world -> base -> ... -> camera
+        transform_stamped = self.tf_buffer.lookup_transform(
+            world_frame,     # Target frame
+            camera_frame,    # Source frame
+            rospy.Time(0),   # Get the latest transform
+            rospy.Duration(1.0)  # Wait for up to 1 second
+        )
+        
+        # Extract translation and rotation from the transform
+        translation = transform_stamped.transform.translation
+        rotation = transform_stamped.transform.rotation
+        
+        # Convert quaternion to rotation matrix
+        quaternion = [rotation.x, rotation.y, rotation.z, rotation.w]
+        rotation_matrix = quaternion_matrix(quaternion)
+        
+        # Set the translation part of the matrix
+        rotation_matrix[0, 3] = translation.x
+        rotation_matrix[1, 3] = translation.y
+        rotation_matrix[2, 3] = translation.z
+        
+        rospy.loginfo("Successfully retrieved camera pose as transformation matrix.")
+        return rotation_matrix
 
     def _plan_path_with_vamp(self, current_joints, target_joints):
         """Plan a path using VAMP motion planner for 8-DOF configuration."""
