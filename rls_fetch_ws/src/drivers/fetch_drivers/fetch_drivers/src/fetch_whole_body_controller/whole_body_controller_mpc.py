@@ -2,7 +2,7 @@
 import rospy
 import casadi as ca
 import numpy as np
-from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, PointStamped
+from geometry_msgs.msg import Twist, PointStamped
 from sensor_msgs.msg import JointState, LaserScan
 from trajectory_msgs.msg import JointTrajectory
 from visualization_msgs.msg import Marker, MarkerArray
@@ -37,23 +37,8 @@ class WholeBodyMPC:
         self.max_joint_acc = np.array(params.get('max_joint_accelerations', [0.05, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))
         
         # State and control weights
-        if isinstance(params['Q_state'], list):
-            if len(params['Q_state']) == self.nx:
-                self.Q_state = np.array(params['Q_state'])
-            else:
-                rospy.logwarn(f"Q_state in config has wrong dimension: expected {self.nx}, got {len(params['Q_state'])}. Using default.")
-                self.Q_state = 10.0 * np.ones(self.nx)
-        else:
-            self.Q_state = params['Q_state'] * np.ones(self.nx)
-        
-        if isinstance(params['R_control'], list):
-            if len(params['R_control']) == self.nu:
-                self.R_control = np.array(params['R_control'])
-            else:
-                rospy.logwarn(f"R_control in config has wrong dimension: expected {self.nu}, got {len(params['R_control'])}. Using default.")
-                self.R_control = 1.0 * np.ones(self.nu)
-        else:
-            self.R_control = params['R_control'] * np.ones(self.nu)
+        self.Q_state = np.array(params['Q_state'])
+        self.R_control = np.array(params['R_control'])
         
         # Slack weights
         self.slack_dynamics_weight = params.get('slack_dynamics_weight', 1000.0)
@@ -88,7 +73,7 @@ class WholeBodyMPC:
         self.setup_optimization()
         
     def setup_optimization(self):
-        """Set up the MPC optimization problem with parameterized obstacle constraints"""
+        """Set up the MPC optimization problem with a more advanced tracking cost."""
         opti = ca.Opti()
         
         # Decision variables
@@ -105,12 +90,9 @@ class WholeBodyMPC:
         # Parameter for previous control input (for acceleration constraints)
         U_prev = opti.parameter(self.nu)
         
-        # Parameters for obstacles: for each obstacle point, store x,y for each time step in horizon
-        # We'll limit to max_obstacle_points obstacles, each with N+1 positions (full horizon)
+        # Parameters for obstacles
         obstacle_params = opti.parameter(2, self.max_obstacle_points * (self.N+1))
-        
-        # New parameter: actual number of obstacle points (represented as a binary mask)
-        obstacle_mask = opti.parameter(self.max_obstacle_points)  # Binary mask for active obstacles
+        obstacle_mask = opti.parameter(self.max_obstacle_points)
         
         # Add slack variables for CBF constraints
         cbf_slack = opti.variable(self.max_obstacle_points, self.M_CBF)
@@ -119,41 +101,59 @@ class WholeBodyMPC:
         # Cost function
         cost = 0
         for i in range(self.N):
-            # Position error
-            position_error = X[:2,i] - X_ref[:2,i]
+            # --- START: MODIFIED STATE COST CALCULATION ---
             
-            # Orientation error - use angular distance metric
-            orientation_error = (1 - ca.cos(X[2,i] - X_ref[2,i])) * 2
+            # Calculate the error vector in the world frame
+            world_frame_error = X[:,i] - X_ref[:,i]
+            ref_yaw = X_ref[2,i]
+
+            # Create the symbolic rotation matrix to transform world-frame error
+            # into the reference vehicle's body frame (Frenet frame).
+            Rot = ca.vertcat(
+                ca.horzcat(ca.cos(ref_yaw),  ca.sin(ref_yaw)),
+                ca.horzcat(-ca.sin(ref_yaw), ca.cos(ref_yaw))
+            )
             
-            # Joint positions error
-            joint_error = X[3:,i] - X_ref[3:,i]
+            # Transform the position error [dx, dy] into the reference frame
+            frenet_pos_error = ca.mtimes(Rot, world_frame_error[:2])
             
-            # Combined weighted state cost with elementwise weights
-            position_cost = self.Q_state[:2].reshape(1, 2) @ (position_error * position_error)
-            orientation_cost = self.Q_state[2] * orientation_error
+            # Extract the meaningful, decoupled errors
+            along_track_error = frenet_pos_error[0] # Error along the desired direction of travel
+            cross_track_error = frenet_pos_error[1] # Error perpendicular to the desired direction
+
+            # Yaw error cost using the (1 - cos(error)) metric for robustness
+            yaw_error_cost = self.Q_state[2] * (1 - ca.cos(world_frame_error[2]))
+
+            # Joint position error cost (remains the same)
+            joint_error = world_frame_error[3:]
             joint_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (joint_error * joint_error)
+
+            # Combined weighted state cost using the new Frenet-frame errors
+            # Re-interpreting Q_state[0] for along-track and Q_state[1] for cross-track error
+            frenet_pos_cost = self.Q_state[0] * along_track_error**2 + self.Q_state[1] * cross_track_error**2
             
-            state_cost = position_cost + orientation_cost + joint_cost
+            state_cost = frenet_pos_cost + yaw_error_cost + joint_cost
+            
+            # --- END: MODIFIED STATE COST CALCULATION ---
+
             cost += state_cost
             
-            # Control costs
+            # Control costs (unchanged)
             control_cost = self.R_control.reshape(1, self.nu) @ (U[:,i] * U[:,i])
             cost += control_cost
             
-            # Penalties for slack variables
+            # Penalties for slack variables (unchanged)
             cost += self.slack_dynamics_weight * ca.sumsqr(slack_dynamics[:,i])
         
-        # Add penalty for CBF slack variables - only for active obstacles
+        # Add penalty for CBF slack variables - only for active obstacles (unchanged)
         for i in range(self.M_CBF):
             for j in range(self.max_obstacle_points):
-                # Use mask to apply slack cost only for active obstacles
                 cost += self.slack_cbf_weight * obstacle_mask[j] * ca.sumsqr(cbf_slack[j,i])
         
-        # Dynamics constraints with slack variables
+        # Dynamics constraints with slack variables (unchanged)
         for i in range(self.N):
             x = X[:,i]
             u = U[:,i]
-            
             dx = ca.vertcat(
                 u[0] * ca.cos(x[2]),  # x
                 u[0] * ca.sin(x[2]),  # y
@@ -161,96 +161,45 @@ class WholeBodyMPC:
                 u[2],                 # torso
                 u[3:]                 # arm joints
             )
-            
-            # Relax dynamics constraints with slack variables
             opti.subject_to(X[:,i+1] == x + dx * self.dt + slack_dynamics[:,i])
         
         # Input constraints
         for i in range(self.N):
-            # Linear velocity
-            opti.subject_to(U[0,i] <= self.max_linear_vel)
-            opti.subject_to(U[0,i] >= -self.max_linear_vel)
-            
-            # Angular velocity
+            opti.subject_to(opti.bounded(0, U[0,i], self.max_linear_vel))
             opti.subject_to(U[1,i] <= self.max_angular_vel)
             opti.subject_to(U[1,i] >= -self.max_angular_vel)
-            
-            # Torso and arm joint velocities
             for j in range(self.n_torso_joints + self.n_arm_joints):
                 opti.subject_to(U[2+j,i] <= self.max_joint_vel[j])
                 opti.subject_to(U[2+j,i] >= -self.max_joint_vel[j])
         
-        # Acceleration constraints - limit rate of change between consecutive control inputs
-        # For the first control input, compare with the previous control input (parameter)
-        # Linear acceleration (base)
-        opti.subject_to(U[0,0] - U_prev[0] <= self.max_linear_acc * self.dt)
-        opti.subject_to(U[0,0] - U_prev[0] >= -self.max_linear_acc * self.dt)
-        
-        # Angular acceleration (base)
-        opti.subject_to(U[1,0] - U_prev[1] <= self.max_angular_acc * self.dt)
-        opti.subject_to(U[1,0] - U_prev[1] >= -self.max_angular_acc * self.dt)
-        
-        # Joint accelerations (torso and arm)
-        for j in range(self.n_torso_joints + self.n_arm_joints):
-            opti.subject_to(U[2+j,0] - U_prev[2+j] <= self.max_joint_acc[j] * self.dt)
-            opti.subject_to(U[2+j,0] - U_prev[2+j] >= -self.max_joint_acc[j] * self.dt)
-        
-        # For the rest of the prediction horizon, compare consecutive control inputs
-        for i in range(1, self.acc_horizon):
-            # Linear acceleration (base)
-            opti.subject_to(U[0,i] - U[0,i-1] <= self.max_linear_acc * self.dt)
-            opti.subject_to(U[0,i] - U[0,i-1] >= -self.max_linear_acc * self.dt)
-            
-            # Angular acceleration (base)
-            opti.subject_to(U[1,i] - U[1,i-1] <= self.max_angular_acc * self.dt)
-            opti.subject_to(U[1,i] - U[1,i-1] >= -self.max_angular_acc * self.dt)
-            
-            # Joint accelerations (torso and arm)
-            for j in range(self.n_torso_joints + self.n_arm_joints):
-                opti.subject_to(U[2+j,i] - U[2+j,i-1] <= self.max_joint_acc[j] * self.dt)
-                opti.subject_to(U[2+j,i] - U[2+j,i-1] >= -self.max_joint_acc[j] * self.dt)
-        
-        # Non-negativity constraints for slack variables
+        # Non-negativity constraints for slack variables (unchanged)
         opti.subject_to(opti.bounded(0, slack_dynamics, 1.0))
         
-        # Initial state constraint (no slack)
+        # Initial state constraint (no slack) (unchanged)
         opti.subject_to(X[:,0] == X0)
         
-        # Define the barrier function
+        # Define the barrier function (unchanged)
         def h(x_, y_):
             return (x_[0] - y_[0])**2 + (x_[1] - y_[1])**2 - self.safe_distance**2
         
-        # Add CBF constraints for each obstacle - using the obstacle_mask to dynamically
-        # enable or disable constraints
+        # Add CBF constraints for each obstacle (unchanged)
         for j in range(self.max_obstacle_points):
-            # Create the constraint expressions but only apply them conditionally
             for i in range(self.M_CBF):
-                # Current and next state positions
                 robot_curr = X[:2, i]
                 robot_next = X[:2, i+1]
-                
-                # Get obstacle positions from parameter array
-                # Each obstacle has N+1 positions (one for each timestep)
                 obs_curr_x = obstacle_params[0, j*(self.N+1) + i]
                 obs_curr_y = obstacle_params[1, j*(self.N+1) + i]
                 obs_next_x = obstacle_params[0, j*(self.N+1) + i+1]
                 obs_next_y = obstacle_params[1, j*(self.N+1) + i+1]
-                
                 obs_curr = ca.vertcat(obs_curr_x, obs_curr_y)
                 obs_next = ca.vertcat(obs_next_x, obs_next_y)
-                
-                # Create the CBF constraint
                 cbf_expression = h(robot_next, obs_next) - (1 - self.gamma_k) * h(robot_curr, obs_curr) + cbf_slack[j, i]
-                
-                # Only apply the constraint if obstacle_mask[j] == 1 (active obstacle)
-                # This multiplies by a very large negative number if mask=0, effectively disabling the constraint
-                # If the obstacle is active (mask=1), we just use the original constraint
                 opti.subject_to(obstacle_mask[j] * cbf_expression + (1 - obstacle_mask[j]) * 1e6 >= 0)
         
-        # Set the objective
+        # Set the objective (unchanged)
         opti.minimize(cost)
         
-        # Store the optimization problem and variables/parameters
+        # Store the optimization problem and variables/parameters (unchanged)
         self.opti = opti
         self.cost = cost
         self.X = X
@@ -259,7 +208,7 @@ class WholeBodyMPC:
         self.X0 = X0
         self.U_prev = U_prev
         self.obstacle_params = obstacle_params
-        self.obstacle_mask = obstacle_mask  # Store the new parameter
+        self.obstacle_mask = obstacle_mask
         self.slack_dynamics = slack_dynamics
         self.cbf_slack = cbf_slack
     
@@ -270,102 +219,88 @@ class WholeBodyMPC:
         if self.debug and len(self.obstacle_positions) > 0:
             rospy.logdebug(f"Updated {len(self.obstacle_positions)} obstacle positions")
 
-    def solve(self, x0, x_ref, predicted_obstacles=None, u_prev=None):
+    def solve(self, x0, x_ref, predicted_obstacles=None):
         """Solve the MPC problem with CBF constraints"""
-        try:
-            # Set parameter values
-            self.opti.set_value(self.X0, x0)
-            self.opti.set_value(self.X_ref, x_ref)
-            
-            # Set previous control input (for acceleration constraints)
-            if u_prev is None:
-                u_prev = np.zeros(self.nu)
-            self.opti.set_value(self.U_prev, u_prev)
-            
-            # If no predictions provided, assume obstacles are static
-            if predicted_obstacles is None:
-                predicted_obstacles = []
-                for obs_pos in self.obstacle_positions:
-                    # Create a trajectory by repeating the current position
-                    obs_traj = [obs_pos] * (self.N + 1)
-                    predicted_obstacles.append(obs_traj)
-            
-            # Create obstacle mask (1 for active obstacles, 0 for inactive)
-            obstacle_mask = np.zeros(self.max_obstacle_points)
-            num_actual_obstacles = min(len(predicted_obstacles), self.max_obstacle_points)
-            
-            # Set 1s for active obstacles (up to the actual count)
-            obstacle_mask[:num_actual_obstacles] = 1.0
-            
-            # Set the obstacle mask parameter
-            self.opti.set_value(self.obstacle_mask, obstacle_mask)
-            
-            if self.debug:
-                rospy.logdebug(f"Setting actual obstacle count to: {num_actual_obstacles}")
-                rospy.logdebug(f"Obstacle mask: {obstacle_mask}")
-            
-            # Pack obstacle trajectories into the parameter array
-            obstacle_data = np.zeros((2, self.max_obstacle_points * (self.N+1)))
-            
-            for j, obs_traj in enumerate(predicted_obstacles):
-                if j >= self.max_obstacle_points:
-                    break  # Don't exceed maximum number of obstacles
-                    
-                for i in range(self.N+1):
-                    if i < len(obs_traj):
-                        # Store x,y for each obstacle at each time step
-                        obstacle_data[0, j*(self.N+1) + i] = obs_traj[i][0]  # x
-                        obstacle_data[1, j*(self.N+1) + i] = obs_traj[i][1]  # y
-                    else:
-                        # If trajectory is shorter than horizon, repeat last position
-                        obstacle_data[0, j*(self.N+1) + i] = obs_traj[-1][0]
-                        obstacle_data[1, j*(self.N+1) + i] = obs_traj[-1][1]
-            
-            # Set obstacle parameter values
-            self.opti.set_value(self.obstacle_params, obstacle_data)
-            
-            # Set solver options
-            opts = {
-                'ipopt.print_level': 0 if not self.debug else 3,
-                'print_time': 0 if not self.debug else 1,
-                'ipopt.max_iter': 100,
-                'ipopt.tol': 1e-4,
-                'ipopt.acceptable_tol': 1e-3,
-                'ipopt.acceptable_obj_change_tol': 1e-4,
-                'ipopt.warm_start_init_point': 'yes'
-            }
-            
-            # Create and call the solver
-            self.opti.solver('ipopt', opts)
-            sol = self.opti.solve()
-            
-            # Extract solution
-            X_opt = sol.value(self.X)
-            U_opt = sol.value(self.U)
-            
-            # Debug information
-            if self.debug:
-                slack_dynamics = sol.value(self.slack_dynamics)
-                cbf_slack = sol.value(self.cbf_slack)
+        # Set parameter values
+        self.opti.set_value(self.X0, x0)
+        self.opti.set_value(self.X_ref, x_ref)
+        
+        # If no predictions provided, assume obstacles are static
+        if predicted_obstacles is None:
+            predicted_obstacles = []
+            for obs_pos in self.obstacle_positions:
+                # Create a trajectory by repeating the current position
+                obs_traj = [obs_pos] * (self.N + 1)
+                predicted_obstacles.append(obs_traj)
+        
+        # Create obstacle mask (1 for active obstacles, 0 for inactive)
+        obstacle_mask = np.zeros(self.max_obstacle_points)
+        num_actual_obstacles = min(len(predicted_obstacles), self.max_obstacle_points)
+        
+        # Set 1s for active obstacles (up to the actual count)
+        obstacle_mask[:num_actual_obstacles] = 1.0
+        
+        # Set the obstacle mask parameter
+        self.opti.set_value(self.obstacle_mask, obstacle_mask)
+        
+        if self.debug:
+            rospy.logdebug(f"Setting actual obstacle count to: {num_actual_obstacles}")
+            rospy.logdebug(f"Obstacle mask: {obstacle_mask}")
+        
+        # Pack obstacle trajectories into the parameter array
+        obstacle_data = np.zeros((2, self.max_obstacle_points * (self.N+1)))
+        
+        for j, obs_traj in enumerate(predicted_obstacles):
+            if j >= self.max_obstacle_points:
+                break  # Don't exceed maximum number of obstacles
                 
-                if np.any(slack_dynamics > 1e-6):
-                    rospy.logwarn(f"Dynamics slack active, max: {np.max(slack_dynamics)}")
-                    
-                if np.any(cbf_slack > 1e-6):
-                    # Only check slacks for active obstacles
-                    active_slacks = cbf_slack[:num_actual_obstacles, :]
-                    if np.any(active_slacks > 1e-6):
-                        rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
+            for i in range(self.N+1):
+                if i < len(obs_traj):
+                    # Store x,y for each obstacle at each time step
+                    obstacle_data[0, j*(self.N+1) + i] = obs_traj[i][0]  # x
+                    obstacle_data[1, j*(self.N+1) + i] = obs_traj[i][1]  # y
+                else:
+                    # If trajectory is shorter than horizon, repeat last position
+                    obstacle_data[0, j*(self.N+1) + i] = obs_traj[-1][0]
+                    obstacle_data[1, j*(self.N+1) + i] = obs_traj[-1][1]
+        
+        # Set obstacle parameter values
+        self.opti.set_value(self.obstacle_params, obstacle_data)
+        
+        # Set solver options
+        opts = {
+            'ipopt.print_level': 0 if not self.debug else 3,
+            'print_time': 0 if not self.debug else 1,
+            'ipopt.max_iter': 100,
+            'ipopt.tol': 1e-4,
+            'ipopt.acceptable_tol': 1e-3,
+            'ipopt.acceptable_obj_change_tol': 1e-4,
+            'ipopt.warm_start_init_point': 'yes'
+        }
+        
+        # Create and call the solver
+        self.opti.solver('ipopt', opts)
+        sol = self.opti.solve()
+        
+        # Extract solution
+        X_opt = sol.value(self.X)
+        U_opt = sol.value(self.U)
+        
+        # Debug information
+        if self.debug:
+            slack_dynamics = sol.value(self.slack_dynamics)
+            cbf_slack = sol.value(self.cbf_slack)
             
-            return X_opt, U_opt
-            
-        except Exception as e:
-            rospy.logerr(f"MPC solve failed: {e}")
-            # Print more debug information if in debug mode
-            if self.debug:
-                import traceback
-                rospy.logerr(traceback.format_exc())
-            return None, None
+            if np.any(slack_dynamics > 1e-6):
+                rospy.logwarn(f"Dynamics slack active, max: {np.max(slack_dynamics)}")
+                
+            if np.any(cbf_slack > 1e-6):
+                # Only check slacks for active obstacles
+                active_slacks = cbf_slack[:num_actual_obstacles, :]
+                if np.any(active_slacks > 1e-6):
+                    rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
+        
+        return X_opt, U_opt
 
 
 class WholeBodyController:
@@ -413,6 +348,17 @@ class WholeBodyController:
         rospy.Subscriber('/fetch_whole_body_controller/arm_path', JointTrajectory, self.arm_cb)
         rospy.Subscriber('/fetch_whole_body_controller/base_path', JointTrajectory, self.base_cb)
         
+        rospy.loginfo("Waiting for the 'map' to 'base_link' transform...")
+        try:
+            # This will block until the transform is available, with a timeout.
+            self.tf_buffer.can_transform(self.map_frame, self.base_frame, rospy.Time(0), timeout=rospy.Duration(15.0))
+            rospy.loginfo("Transform is now available.")
+        except tf2_ros.TransformException as e:
+            rospy.logerr(f"Could not get transform after 15 seconds. Is a localization node (e.g., amcl) running? Error: {e}")
+            # Depending on your needs, you might want to shut down or raise an exception
+            rospy.signal_shutdown("TF transform not available")
+            return
+        
         # Create timers for execution and obstacle processing
         self.execution_timer = None
         
@@ -459,22 +405,18 @@ class WholeBodyController:
 
     def get_base_pose_from_tf(self):
         """Get robot pose from TF"""
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame,
-                self.base_frame,
-                rospy.Time(0),
-                rospy.Duration(0.1)
-            )
-            
-            pos = transform.transform.translation
-            q = transform.transform.rotation
-            _, _, yaw = tf_trans.euler_from_quaternion([q.x, q.y, q.z, q.w])
-            
-            return [pos.x, pos.y, yaw]
-            
-        except:
-            return None
+        transform = self.tf_buffer.lookup_transform(
+            self.map_frame,
+            self.base_frame,
+            rospy.Time(0),
+            rospy.Duration(0.1)
+        )
+        
+        pos = transform.transform.translation
+        q = transform.transform.rotation
+        _, _, yaw = tf_trans.euler_from_quaternion([q.x, q.y, q.z, q.w])
+        
+        return [pos.x, pos.y, yaw]
 
     def joint_cb(self, msg):
         # Only process messages with length > 2 to filter out gripper messages
@@ -496,105 +438,103 @@ class WholeBodyController:
         """Process lidar data using proper TF transformations"""
         if self.lidar_data is None:
             return
+            
+        # Get the transform from laser frame to map frame at the latest available time.
+        # Using rospy.Time(0) requests the latest transform, avoiding the extrapolation error
+        # which occurs when the scan's timestamp is too old for the tf buffer.
+        transform = self.tf_buffer.lookup_transform(
+            "map",                                # Target frame
+            self.lidar_data.header.frame_id,      # Source frame (e.g., laser_link)
+            rospy.Time(0),                        # FIX: Ask for the latest available transform
+            rospy.Duration(0.1)                   # Timeout
+        )
         
-        try:
-            # Get the transform from laser frame to map frame
-            transform = self.tf_buffer.lookup_transform(
-                "map",                      # Target frame
-                self.lidar_data.header.frame_id,  # Source frame (laser_link)
-                self.lidar_data.header.stamp,     # Time of the scan
-                rospy.Duration(0.1)                # Timeout
-            )
+        # Filter valid ranges
+        ranges = np.array(self.lidar_data.ranges)
+        # Correctly create the angles array to match the length of ranges
+        angles = np.arange(
+            self.lidar_data.angle_min,
+            self.lidar_data.angle_max,
+            self.lidar_data.angle_increment
+        )[:len(ranges)]
+        
+        valid_indices = np.where(
+            (ranges > self.lidar_data.range_min) & 
+            (ranges < self.params['lidar_max_range']) &
+            (~np.isnan(ranges)) & 
+            (~np.isinf(ranges))
+        )[0]
+        
+        if len(valid_indices) == 0:
+            self.obstacle_positions = []
+            self.mpc.update_obstacles(self.obstacle_positions)
+            return
             
-            # Filter valid ranges
-            ranges = np.array(self.lidar_data.ranges)
-            angles = np.arange(
-                self.lidar_data.angle_min,
-                self.lidar_data.angle_max + self.lidar_data.angle_increment,
-                self.lidar_data.angle_increment
-            )
+        # Extract valid ranges and angles
+        valid_ranges = ranges[valid_indices]
+        valid_angles = angles[valid_indices]
+        
+        # Convert to cartesian coordinates (in lidar frame)
+        x_lidar = valid_ranges * np.cos(valid_angles)
+        y_lidar = valid_ranges * np.sin(valid_angles)
+        
+        # Create list of points for transformation
+        points_map = []
+        
+        # Transform each point individually using tf2
+        for i in range(len(x_lidar)):
+            point_lidar = PointStamped()
+            point_lidar.header = self.lidar_data.header
+            point_lidar.point.x = x_lidar[i]
+            point_lidar.point.y = y_lidar[i]
+            point_lidar.point.z = 0.0
             
-            valid_indices = np.where(
-                (ranges > self.lidar_data.range_min) & 
-                (ranges < self.lidar_data.range_max) & 
-                (ranges < self.params['lidar_max_range']) &
-                (~np.isnan(ranges)) & 
-                (~np.isinf(ranges))
-            )[0]
+            # Transform the point to map frame
+            point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
             
-            if len(valid_indices) == 0:
-                self.obstacle_positions = []
-                self.mpc.update_obstacles(self.obstacle_positions)
-                return
+            # Store the transformed point
+            points_map.append((point_map.point.x, point_map.point.y))
+        
+        # Group points into voxels using a dictionary for efficiency
+        voxel_dict = {}
+        
+        for x, y in points_map:
+            voxel_x = int(x / self.params['voxel_size'])
+            voxel_y = int(y / self.params['voxel_size'])
+            
+            voxel_key = (voxel_x, voxel_y)
+            if voxel_key not in voxel_dict:
+                voxel_dict[voxel_key] = []
                 
-            # Extract valid ranges and angles
-            valid_ranges = ranges[valid_indices]
-            valid_angles = angles[valid_indices]
+            voxel_dict[voxel_key].append((x, y))
+        
+        # Calculate centroid of each voxel
+        obstacle_positions = []
+        
+        for voxel_points in voxel_dict.values():
+            x_sum = sum(p[0] for p in voxel_points)
+            y_sum = sum(p[1] for p in voxel_points)
+            count = len(voxel_points)
             
-            # Convert to cartesian coordinates (in lidar frame)
-            x_lidar = valid_ranges * np.cos(valid_angles)
-            y_lidar = valid_ranges * np.sin(valid_angles)
-            
-            # Create list of points for transformation
-            points_map = []
-            
-            # Transform each point individually using tf2
-            for i in range(len(x_lidar)):
-                point_lidar = PointStamped()
-                point_lidar.header = self.lidar_data.header
-                point_lidar.point.x = x_lidar[i]
-                point_lidar.point.y = y_lidar[i]
-                point_lidar.point.z = 0.0
-                
-                # Transform the point to map frame
-                point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
-                
-                # Store the transformed point
-                points_map.append((point_map.point.x, point_map.point.y))
-            
-            # Group points into voxels using a dictionary for efficiency
-            voxel_dict = {}
-            
-            for x, y in points_map:
-                voxel_x = int(x / self.params['voxel_size'])
-                voxel_y = int(y / self.params['voxel_size'])
-                
-                voxel_key = (voxel_x, voxel_y)
-                if voxel_key not in voxel_dict:
-                    voxel_dict[voxel_key] = []
-                    
-                voxel_dict[voxel_key].append((x, y))
-            
-            # Calculate centroid of each voxel
-            obstacle_positions = []
-            
-            for voxel_points in voxel_dict.values():
-                x_sum = sum(p[0] for p in voxel_points)
-                y_sum = sum(p[1] for p in voxel_points)
-                count = len(voxel_points)
-                
-                centroid = (x_sum / count, y_sum / count)
-                obstacle_positions.append(centroid)
-            
-            # Sort by distance to robot
-            current_base_pose = self.get_base_pose_from_tf()
-            if current_base_pose is not None:
-                robot_x, robot_y, _ = current_base_pose
-                obstacle_positions.sort(key=lambda p: (p[0] - robot_x)**2 + (p[1] - robot_y)**2)
-            
-            # Keep only the closest obstacles
-            obstacle_positions = obstacle_positions[:self.params['max_obstacle_points']]
-            
-            # Update MPC with new obstacle positions
-            self.obstacle_positions = obstacle_positions
-            self.mpc.update_obstacles(obstacle_positions)
-            
-            # Publish visualization
-            self.publish_obstacle_markers()
-            self.publish_point_cloud(points_map)
-                
-        except:
-            pass
+            centroid = (x_sum / count, y_sum / count)
+            obstacle_positions.append(centroid)
+        
+        # Sort by distance to robot
+        current_base_pose = self.get_base_pose_from_tf()
+        if current_base_pose is not None:
+            robot_x, robot_y, _ = current_base_pose
+            obstacle_positions.sort(key=lambda p: (p[0] - robot_x)**2 + (p[1] - robot_y)**2)
+        
+        # Keep only the closest obstacles
+        obstacle_positions = obstacle_positions[:self.params['max_obstacle_points']]
+        
+        # Update MPC with new obstacle positions
+        self.obstacle_positions = obstacle_positions
+        self.mpc.update_obstacles(obstacle_positions)
+        
+        # Publish visualization
+        self.publish_obstacle_markers()
+        self.publish_point_cloud(points_map)
 
     def publish_obstacle_markers(self):
         """Publish visualization markers for detected obstacles"""
@@ -811,7 +751,7 @@ class WholeBodyController:
             start_time = rospy.Time.now()
             
         # Solve MPC with CBF constraints and acceleration constraints
-        X, U = self.mpc.solve(current_state, ref, predicted_obstacles, self.prev_control)
+        X, U = self.mpc.solve(current_state, ref, predicted_obstacles)
         
         if self.params['debug']:
             solve_time = (rospy.Time.now() - start_time).to_sec()
@@ -821,9 +761,6 @@ class WholeBodyController:
             rospy.logerr("MPC solve failed. Stopping execution.")
             self.stop_execution()
             return
-            
-        # Store current control input as previous for next iteration
-        self.prev_control = U[:,0]
             
         # Publish commands
         self.publish_commands(U[:,0])
@@ -871,8 +808,6 @@ class WholeBodyController:
         """Send zero velocity commands to stop the robot"""
         zero_control = np.zeros(self.mpc.nu)
         self.publish_commands(zero_control)
-        # Update prev_control to zeros for smooth restart if needed
-        self.prev_control = zero_control
 
 
 if __name__ == '__main__':

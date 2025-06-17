@@ -1,12 +1,38 @@
 <?xml version="1.0"?>
 <launch>
-  <!-- Load controller parameters -->
-  <rosparam command="load" file="$(find fetch_drivers)/config/whole_body_controller_mpc.yaml" ns="fetch_whole_body_controller" />
-  
-  <!-- Launch the controller node using Python node -->
-  <node name="fetch_whole_body_controller" pkg="fetch_drivers" 
-        type="whole_body_controller_mpc" 
-        output="screen">
-    <!-- Parameters loaded from config file -->
-  </node>
-</launch> 
+  <!--
+    This launch file starts the Fetch Whole Body Controller.
+    It dynamically launches the controller specified by the 'controller_type' argument.
+    
+    This simpler version avoids <if> blocks by constructing file and script names
+    directly from the argument.
+    
+    Usage:
+      roslaunch fetch_drivers whole_body_controller.launch controller_type:=mpc
+      roslaunch fetch_drivers whole_body_controller.launch controller_type:=chained
+  -->
+
+  <!-- The single argument you need to change to switch controllers. Default is 'mpc'. -->
+  <arg name="controller_type" default="mpc" doc="Select the controller: 'mpc' or 'chained'"/>
+
+  <!-- A consistent name for the running node -->
+  <arg name="node_name" default="fetch_whole_body_controller"/>
+
+  <!-- 
+    Load the correct parameter file.
+    It builds the filename dynamically, e.g., "whole_body_controller_mpc.yaml".
+  -->
+  <rosparam command="load"
+            file="$(find fetch_drivers)/config/whole_body_controller_$(arg controller_type).yaml"
+            ns="$(arg node_name)" />
+
+  <!-- 
+    Launch the correct controller node.
+    It builds the script name dynamically, e.g., "whole_body_controller_chained".
+  -->
+  <node name="$(arg node_name)"
+        pkg="fetch_drivers"
+        type="whole_body_controller_$(arg controller_type)"
+        output="screen" />
+
+</launch>

@@ -4,14 +4,14 @@ control_rate: 10.0
 prediction_horizon: 10
 
 # Velocity limits
-max_linear_vel: 1.5
-max_angular_vel: 1.0
+max_linear_vel: 0.5
+max_angular_vel: 0.5
 position_tolerance: 0.03
 angle_tolerance: 0.05
 
 # Acceleration limits
-max_linear_acc: 1.5  # Maximum linear acceleration (m/s²)
-max_angular_acc: 1.5  # Maximum angular acceleration (rad/s²)
+max_linear_acc: 0.5  # Maximum linear acceleration (m/s²)
+max_angular_acc: 0.5  # Maximum angular acceleration (rad/s²)
 
 # Joint configuration
 joint_names:

@@ -527,8 +527,8 @@ class Fetch:
         quaternion = [rot.x, rot.y, rot.z, rot.w]
         euler = tf.transformations.euler_from_quaternion(quaternion)
         yaw = euler[2]  # theta
-        # Return in the (theta, x, y) order expected by set_base_params and VAMP
-        return (yaw, trans.x, trans.y)
+        # Return in the (x, y) order expected by set_base_params and VAMP
+        return (trans.x, trans.y, yaw)
 
     def get_current_planning_joints(self):
         """Get current joint positions for planning (8-DOF including torso)."""

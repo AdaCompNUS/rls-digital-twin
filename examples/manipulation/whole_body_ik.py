@@ -8,7 +8,7 @@ from geometry_msgs.msg import Pose
 from fetch.fetch import Fetch
 
 # Select which test case to run (0-4)
-TEST_CASE_INDEX = 0  # Change this value to select a specific test case
+TEST_CASE_INDEX = 2  # Change this value to select a specific test case
 
 # Configuration for testing
 USE_POINTCLOUD = True  # Set to False to skip pointcloud loading
