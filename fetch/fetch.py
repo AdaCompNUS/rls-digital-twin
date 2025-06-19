@@ -15,9 +15,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 import tf2_ros
 import time
-from trac_ik_python.trac_ik import IK
-import fetch.utils.whole_body_ik_utils as ik_utils
 import fetch.utils.transform_utils as transform_utils
+from fetch.utils.ik_solver_utils import WholeBodyIKSolver
 import tf.transformations
 
 
@@ -117,43 +116,8 @@ class Fetch:
             "/fetch_whole_body_controller/base_path", JointTrajectory, queue_size=1
         )
 
-        # Add URDF loading and IK solver initialization
-        self.BASE_LINK = "world_link"
-        self.EE_LINK = "gripper_link"
-
-        try:
-            # Load URDF for IK
-            with open(urdf_path, "r") as f:
-                self.urdf_str = f.read()
-
-            # Initialize IK solver
-            self.ik_solver = IK(
-                self.BASE_LINK,
-                self.EE_LINK,
-                urdf_string=self.urdf_str,
-                timeout=0.5,
-                epsilon=1e-6,
-            )
-
-            # Get joint limits
-            self.lower_limits, self.upper_limits = self.ik_solver.get_joint_limits()
-
-            rospy.loginfo("Initialized IK solver with fetch_ext.urdf")
-        except Exception as e:
-            rospy.logerr(f"Failed to initialize IK solver: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
-
-        # Initialize default costmap path
-        self.costmap_path = costmap_path
-        self.costmap = None
-        self.costmap_metadata = None
-
-        # Try to load the costmap using the utility function
-        self.costmap, self.costmap_metadata = ik_utils.load_costmap(self.costmap_path)
-        if self.costmap is None:
-            rospy.logwarn(f"Failed to load costmap from {self.costmap_path}. Proceeding without costmap features.")
+        # Initialize the whole-body IK solver
+        self.ik_solver = WholeBodyIKSolver(urdf_path=urdf_path, costmap_path=costmap_path)
 
     def solve_whole_body_ik(
         self, target_pose, max_attempts=100, manipulation_radius=1.0
@@ -172,158 +136,14 @@ class Fetch:
         Returns:
             dict: Solution containing base and arm configuration, or None if no solution found
         """
-        import time
-        from geometry_msgs.msg import Pose
-
-        if not hasattr(self, "ik_solver"):
-            rospy.logerr("IK solver not initialized")
-            return None
-
-        # Copy target pose to ensure we don't modify the input
-        pose = Pose()
-        pose.position.x = target_pose.position.x
-        pose.position.y = target_pose.position.y
-        pose.position.z = target_pose.position.z
-        pose.orientation.x = target_pose.orientation.x
-        pose.orientation.y = target_pose.orientation.y
-        pose.orientation.z = target_pose.orientation.z
-        pose.orientation.w = target_pose.orientation.w
-
-        rospy.loginfo(
-            "Solving whole-body IK for pose: "
-            + f"position [{pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}], "
-            + f"orientation [{pose.orientation.x:.3f}, {pose.orientation.y:.3f}, "
-            + f"{pose.orientation.z:.3f}, {pose.orientation.w:.3f}]"
+        return self.ik_solver.solve(
+            vamp_module=self.vamp_module,
+            env=self.env,
+            target_pose=target_pose,
+            max_attempts=max_attempts,
+            manipulation_radius=manipulation_radius,
+            use_fixed_base=True,
         )
-
-        # Initialize variables for the sampling loop
-        solution = None
-        is_valid = False
-        sample_count = 0
-
-        all_time = time.time()
-
-        while not is_valid and sample_count < max_attempts:
-            sample_count += 1
-            rospy.loginfo(f"IK attempt {sample_count}/{max_attempts}")
-
-            # Generate a deterministic seed using the utility function
-            seed = ik_utils.generate_ik_seed(
-                pose,
-                self.costmap,
-                self.costmap_metadata,
-                self.lower_limits,
-                self.upper_limits,
-                manipulation_radius
-            )
-            # Handle case where seed generation failed (e.g., invalid limits)
-            if seed is None:
-                 rospy.logerr("Failed to generate IK seed. Aborting IK attempt.")
-                 continue # Or return None, depending on desired behavior
-
-            rospy.loginfo(
-                f"Initial configuration (seed): {[round(val, 3) for val in seed]}"
-            )
-
-            # Start timing IK solution
-            start_time = time.time()
-
-            # Solve IK
-            solution = self.ik_solver.get_ik(
-                seed,
-                pose.position.x,
-                pose.position.y,
-                pose.position.z,
-                pose.orientation.x,
-                pose.orientation.y,
-                pose.orientation.z,
-                pose.orientation.w,
-            )
-
-            # End timing
-            end_time = time.time()
-            solve_time = end_time - start_time
-            rospy.loginfo(f"IK solving time: {solve_time:.4f} seconds")
-
-            if not solution:
-                rospy.logwarn("IK failed. Trying again...")
-                continue
-
-            rospy.loginfo("IK solution found!")
-
-            # --- Perform Collision Checking with VAMP ---
-            rospy.loginfo("Performing collision checking on IK solution...")
-
-            # VAMP only takes 8 DOF (torso + 7 arm joints), not the full solution
-            vamp_solution = list(solution)
-            base_config = vamp_solution[:3]
-
-            if len(vamp_solution) > 8:
-                rospy.loginfo(
-                    f"Extracting 8 DOF from {len(vamp_solution)}-DOF IK solution for VAMP validation"
-                )
-                # Extract the relevant joints for VAMP (skipping base)
-                vamp_solution = vamp_solution[
-                    3:11
-                ]  # Take the 8 DOF for arm (index 3 to 10)
-
-            rospy.loginfo(
-                f"Validating arm configuration: {[round(v, 3) for v in vamp_solution]}"
-            )
-            self.vamp_module.set_base_params(
-                base_config[2], base_config[0], base_config[1]
-            )
-
-            # Check if the solution is valid (collision-free)
-            is_valid = self.vamp_module.validate(vamp_solution, self.env)
-
-            if is_valid:
-                rospy.loginfo("IK solution is valid (collision-free)")
-            else:
-                rospy.logwarn(
-                    "IK solution is not valid (has collisions). Trying again..."
-                )
-
-        # Check if we found a valid solution
-        if is_valid:
-            rospy.loginfo(f"Found valid solution after {sample_count} attempts")
-            all_time_end = time.time()
-            rospy.loginfo(f"Total IK time: {all_time_end - all_time:.4f} seconds")
-
-            # Extract the base position and arm configuration
-            if len(solution) >= 3:
-                base_position = [solution[0], solution[1]]  # x, y
-                base_orientation = solution[2]  # theta (yaw)
-
-                # Create the goal_base configuration for motion planning
-                goal_base = [base_position[0], base_position[1], base_orientation]
-            else:
-                rospy.logerr(
-                    "Solution has fewer than 3 values, cannot extract base position"
-                )
-                return None
-
-            # Extract the arm configuration
-            if (
-                len(solution) >= 11
-            ):  # If we have the expected 11 values (3 base + 8 arm)
-                arm_config = solution[3:11]  # Extract 8 arm joint values
-
-                # Return the solution as a dictionary
-                return {
-                    "base_config": goal_base,
-                    "arm_config": list(arm_config),
-                    "full_solution": list(solution),
-                    "attempts": sample_count,
-                }
-            else:
-                rospy.logerr(
-                    "Solution doesn't have enough values for arm configuration"
-                )
-                return None
-        else:
-            rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
-            return None
 
     def move_to_pose(self, target_pose, planning_time=10.0, execution_time=10.0):
         """
