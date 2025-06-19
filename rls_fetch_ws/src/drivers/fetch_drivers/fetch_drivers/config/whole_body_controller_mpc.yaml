@@ -1,17 +1,12 @@
 # MPC Controller Parameters
 # Control parameters
-control_rate: 10.0
-prediction_horizon: 10
+control_rate: 10
+prediction_horizon: 15
+trajectory_end_threshold: 0.07 # The tolerance for reaching the final goal state
 
 # Velocity limits
 max_linear_vel: 0.5
-max_angular_vel: 0.5
-position_tolerance: 0.03
-angle_tolerance: 0.05
-
-# Acceleration limits
-max_linear_acc: 0.5  # Maximum linear acceleration (m/s²)
-max_angular_acc: 0.5  # Maximum angular acceleration (rad/s²)
+max_angular_vel: 1.0
 
 # Joint configuration
 joint_names:
@@ -25,10 +20,9 @@ joint_names:
   - wrist_roll_joint
 
 max_joint_velocities: [0.2, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-max_joint_accelerations: [0.15, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]  # Maximum joint acceleration (rad/s²)
 
 # MPC cost weights - State weights (x, y, theta, torso_joint, 7 arm_joints)
-Q_state: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+Q_state: [30.0, 30.0, 30.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
 
 # Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
 R_control: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
@@ -42,7 +36,6 @@ lidar_max_range: 0.5  # Maximum range to consider for obstacle detection (meters
 safe_distance: 0.15    # Minimum safe distance from obstacles (meters)
 voxel_size: 0.2       # Size of voxels for point cloud clustering (meters)
 max_obstacle_points: 10  # Maximum number of obstacle points to consider
-obstacle_weight: 100.0   # Weight for obstacle avoidance constraints
 gamma_k: 0.1            # CBF decay rate
 
 # Debug settings

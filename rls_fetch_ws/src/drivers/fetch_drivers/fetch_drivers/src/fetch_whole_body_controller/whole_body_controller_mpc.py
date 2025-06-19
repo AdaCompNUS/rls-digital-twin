@@ -2,7 +2,7 @@
 import rospy
 import casadi as ca
 import numpy as np
-from geometry_msgs.msg import Twist, PointStamped
+from geometry_msgs.msg import Twist, PointStamped, Point
 from sensor_msgs.msg import JointState, LaserScan
 from trajectory_msgs.msg import JointTrajectory
 from visualization_msgs.msg import Marker, MarkerArray
@@ -17,7 +17,7 @@ import struct
 class WholeBodyMPC:
     def __init__(self, params):
         self.N = params['prediction_horizon']
-        self.dt = 1.0 / params['control_rate']
+        self.dt = 0.1
         
         # Dimensions
         self.n_arm_joints = 7
@@ -30,11 +30,6 @@ class WholeBodyMPC:
         self.max_linear_vel = params['max_linear_vel']
         self.max_angular_vel = params['max_angular_vel']
         self.max_joint_vel = np.array(params['max_joint_velocities'])
-        
-        # Acceleration limits
-        self.max_linear_acc = params.get('max_linear_acc', 0.5)
-        self.max_angular_acc = params.get('max_angular_acc', 0.8)
-        self.max_joint_acc = np.array(params.get('max_joint_accelerations', [0.05, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))
         
         # State and control weights
         self.Q_state = np.array(params['Q_state'])
@@ -54,8 +49,6 @@ class WholeBodyMPC:
         self.gamma_k = params.get('gamma_k', 0.1)  # CBF decay rate
         self.M_CBF = min(3, self.N)  # Number of steps to apply CBF (using full horizon)
         
-        self.acc_horizon = min(2, self.N)
-        
         # Debug flag
         self.debug = params['debug']
         
@@ -64,7 +57,6 @@ class WholeBodyMPC:
             rospy.loginfo(f"Q_state = {self.Q_state}")
             rospy.loginfo(f"R_control = {self.R_control}")
             rospy.loginfo(f"Obstacle params: safe_distance={self.safe_distance}, gamma_k={self.gamma_k}")
-            rospy.loginfo(f"Acceleration limits: linear={self.max_linear_acc}, angular={self.max_angular_acc}")
         
         # Initialize obstacle data
         self.obstacle_positions = []
@@ -87,9 +79,6 @@ class WholeBodyMPC:
         X_ref = opti.parameter(self.nx, self.N+1)
         X0 = opti.parameter(self.nx)
         
-        # Parameter for previous control input (for acceleration constraints)
-        U_prev = opti.parameter(self.nu)
-        
         # Parameters for obstacles
         obstacle_params = opti.parameter(2, self.max_obstacle_points * (self.N+1))
         obstacle_mask = opti.parameter(self.max_obstacle_points)
@@ -101,8 +90,6 @@ class WholeBodyMPC:
         # Cost function
         cost = 0
         for i in range(self.N):
-            # --- START: MODIFIED STATE COST CALCULATION ---
-            
             # Calculate the error vector in the world frame
             world_frame_error = X[:,i] - X_ref[:,i]
             ref_yaw = X_ref[2,i]
@@ -128,27 +115,32 @@ class WholeBodyMPC:
             joint_error = world_frame_error[3:]
             joint_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (joint_error * joint_error)
 
-            # Combined weighted state cost using the new Frenet-frame errors
+            # Combined weighted state cost using the Frenet-frame errors
             # Re-interpreting Q_state[0] for along-track and Q_state[1] for cross-track error
             frenet_pos_cost = self.Q_state[0] * along_track_error**2 + self.Q_state[1] * cross_track_error**2
             
             state_cost = frenet_pos_cost + yaw_error_cost + joint_cost
-            
-            # --- END: MODIFIED STATE COST CALCULATION ---
 
             cost += state_cost
             
-            # Control costs (unchanged)
+            # Control costs
             control_cost = self.R_control.reshape(1, self.nu) @ (U[:,i] * U[:,i])
             cost += control_cost
             
-            # Penalties for slack variables (unchanged)
+            # Penalties for slack variables
             cost += self.slack_dynamics_weight * ca.sumsqr(slack_dynamics[:,i])
         
-        # Add penalty for CBF slack variables - only for active obstacles (unchanged)
-        for i in range(self.M_CBF):
-            for j in range(self.max_obstacle_points):
-                cost += self.slack_cbf_weight * obstacle_mask[j] * ca.sumsqr(cbf_slack[j,i])
+        # finial_yaw_error = X[2, self.N] - X_ref[2, self.N]
+        # finial_yaw_error_cost = self.Q_state[2] * (1 - ca.cos(finial_yaw_error))
+        # finial_joint_error = X[3:, self.N] - X_ref[3:, self.N]
+        # finial_joint_error_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (finial_joint_error * finial_joint_error)
+        # finial_frenet_pos_cost = self.Q_state[0] * finial_yaw_error**2 + self.Q_state[1] * finial_joint_error_cost
+        # cost += (finial_frenet_pos_cost + finial_yaw_error_cost + finial_joint_error_cost)
+        
+        # Add penalty for CBF slack variables - only for active obstacles
+        # for i in range(self.M_CBF):
+        #     for j in range(self.max_obstacle_points):
+        #         cost += self.slack_cbf_weight * obstacle_mask[j] * ca.sumsqr(cbf_slack[j,i])
         
         # Dynamics constraints with slack variables (unchanged)
         for i in range(self.N):
@@ -183,18 +175,18 @@ class WholeBodyMPC:
             return (x_[0] - y_[0])**2 + (x_[1] - y_[1])**2 - self.safe_distance**2
         
         # Add CBF constraints for each obstacle (unchanged)
-        for j in range(self.max_obstacle_points):
-            for i in range(self.M_CBF):
-                robot_curr = X[:2, i]
-                robot_next = X[:2, i+1]
-                obs_curr_x = obstacle_params[0, j*(self.N+1) + i]
-                obs_curr_y = obstacle_params[1, j*(self.N+1) + i]
-                obs_next_x = obstacle_params[0, j*(self.N+1) + i+1]
-                obs_next_y = obstacle_params[1, j*(self.N+1) + i+1]
-                obs_curr = ca.vertcat(obs_curr_x, obs_curr_y)
-                obs_next = ca.vertcat(obs_next_x, obs_next_y)
-                cbf_expression = h(robot_next, obs_next) - (1 - self.gamma_k) * h(robot_curr, obs_curr) + cbf_slack[j, i]
-                opti.subject_to(obstacle_mask[j] * cbf_expression + (1 - obstacle_mask[j]) * 1e6 >= 0)
+        # for j in range(self.max_obstacle_points):
+        #     for i in range(self.M_CBF):
+        #         robot_curr = X[:2, i]
+        #         robot_next = X[:2, i+1]
+        #         obs_curr_x = obstacle_params[0, j*(self.N+1) + i]
+        #         obs_curr_y = obstacle_params[1, j*(self.N+1) + i]
+        #         obs_next_x = obstacle_params[0, j*(self.N+1) + i+1]
+        #         obs_next_y = obstacle_params[1, j*(self.N+1) + i+1]
+        #         obs_curr = ca.vertcat(obs_curr_x, obs_curr_y)
+        #         obs_next = ca.vertcat(obs_next_x, obs_next_y)
+        #         cbf_expression = h(robot_next, obs_next) - (1 - self.gamma_k) * h(robot_curr, obs_curr) + cbf_slack[j, i]
+        #         opti.subject_to(obstacle_mask[j] * cbf_expression + (1 - obstacle_mask[j]) * 1e6 >= 0)
         
         # Set the objective (unchanged)
         opti.minimize(cost)
@@ -206,11 +198,10 @@ class WholeBodyMPC:
         self.U = U
         self.X_ref = X_ref
         self.X0 = X0
-        self.U_prev = U_prev
         self.obstacle_params = obstacle_params
         self.obstacle_mask = obstacle_mask
         self.slack_dynamics = slack_dynamics
-        self.cbf_slack = cbf_slack
+        # self.cbf_slack = cbf_slack
     
     def update_obstacles(self, obstacle_positions):
         """Update obstacle positions"""
@@ -289,16 +280,16 @@ class WholeBodyMPC:
         # Debug information
         if self.debug:
             slack_dynamics = sol.value(self.slack_dynamics)
-            cbf_slack = sol.value(self.cbf_slack)
+            # cbf_slack = sol.value(self.cbf_slack)
             
             if np.any(slack_dynamics > 1e-6):
                 rospy.logwarn(f"Dynamics slack active, max: {np.max(slack_dynamics)}")
                 
-            if np.any(cbf_slack > 1e-6):
-                # Only check slacks for active obstacles
-                active_slacks = cbf_slack[:num_actual_obstacles, :]
-                if np.any(active_slacks > 1e-6):
-                    rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
+            # if np.any(cbf_slack > 1e-6):
+            #     # Only check slacks for active obstacles
+            #     active_slacks = cbf_slack[:num_actual_obstacles, :]
+            #     if np.any(active_slacks > 1e-6):
+            #         rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
         
         return X_opt, U_opt
 
@@ -315,9 +306,6 @@ class WholeBodyController:
         self.executing = False
         self.lidar_data = None
         self.obstacle_positions = []
-        
-        # Track previous control input for acceleration constraints
-        self.prev_control = None
         
         # Create TF buffer with longer cache time for better performance
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
@@ -339,6 +327,12 @@ class WholeBodyController:
         # Visualization publishers
         self.obstacle_marker_pub = rospy.Publisher('/obstacle_visualization', MarkerArray, queue_size=1)
         self.cloud_pub = rospy.Publisher('/processed_obstacle_cloud', PointCloud2, queue_size=1)
+        
+        # Debug publishers for paths
+        if self.params['debug']:
+            self.ref_path_pub = rospy.Publisher('/ref_path_viz', Marker, queue_size=1)
+            self.mpc_path_pub = rospy.Publisher('/mpc_path_viz', Marker, queue_size=1)
+            self.global_path_pub = rospy.Publisher('/global_path_viz', Marker, queue_size=1)
         
         # Subscribe to sensor topics
         rospy.Subscriber('/joint_states', JointState, self.joint_cb)
@@ -378,19 +372,14 @@ class WholeBodyController:
             'max_angular_vel': rospy.get_param('~max_angular_vel', 1.0),
             'max_joint_velocities': rospy.get_param('~max_joint_velocities', 
                 [0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-            # Acceleration limits (new parameters)
-            'max_linear_acc': rospy.get_param('~max_linear_acc', 0.5),
-            'max_angular_acc': rospy.get_param('~max_angular_acc', 0.8),
-            'max_joint_accelerations': rospy.get_param('~max_joint_accelerations', 
-                [0.05, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
             'Q_state': rospy.get_param('~Q_state', 
                 [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]),
             'R_control': rospy.get_param('~R_control', 
                 [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]),
             'slack_dynamics_weight': rospy.get_param('~slack_dynamics_weight', 1000.0),
-            'base_pos_threshold': rospy.get_param('~base_pos_threshold', 0.1),
+            'base_pos_threshold': rospy.get_param('~base_pos_threshold', 0.05),
             'min_waypoint_distance': rospy.get_param('~min_waypoint_distance', 0.05),
-            'trajectory_end_threshold': rospy.get_param('~trajectory_end_threshold', 0.2),
+            'trajectory_end_threshold': rospy.get_param('~trajectory_end_threshold', 0.05),
             'lidar_max_range': rospy.get_param('~lidar_max_range', 1.0),
             'safe_distance': rospy.get_param('~safe_distance', 0.3),
             'voxel_size': rospy.get_param('~voxel_size', 0.2),
@@ -597,6 +586,39 @@ class WholeBodyController:
         cloud = pc2.create_cloud(header, fields, cloud_data)
         self.cloud_pub.publish(cloud)
 
+    def publish_path_as_marker(self, path, publisher, r, g, b, marker_id):
+        """Publish a path as a LINE_STRIP marker."""
+        if not self.params['debug']:
+            return
+
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "path_viz"
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.05  # Line width
+
+        marker.color.r = r
+        marker.color.g = g
+        marker.color.b = b
+        marker.color.a = 1.0
+
+        marker.lifetime = rospy.Duration(0.5)
+
+        # Path is expected to be a list of states (e.g., from X.T)
+        for state in path:
+            p = Point()
+            p.x = state[0]
+            p.y = state[1]
+            p.z = 0.1  # slightly above ground
+            marker.points.append(p)
+        
+        publisher.publish(marker)
+
     def arm_cb(self, msg):
         self.arm_traj = {
             'points': [p.positions for p in msg.points]
@@ -622,6 +644,10 @@ class WholeBodyController:
             np.concatenate([base, arm])
             for base, arm in zip(self.base_traj['points'], self.arm_traj['points'])
         ]
+        
+        if self.params['debug']:
+            # Visualize global path (blue)
+            self.publish_path_as_marker(self.merged_traj, self.global_path_pub, 0.0, 0.0, 1.0, 2)
         
         # Pre-compute distances between consecutive waypoints for the base
         self.base_waypoint_distances = []
@@ -695,7 +721,7 @@ class WholeBodyController:
     def construct_reference_from_waypoint(self, start_idx):
         """Construct reference trajectory starting from the given waypoint index"""
         ref = np.zeros((self.mpc.nx, self.mpc.N+1))
-        
+        start_idx += 5
         for i in range(self.mpc.N+1):
             idx = min(start_idx + i, len(self.merged_traj) - 1)
             ref[:,i] = self.merged_traj[idx]
@@ -748,6 +774,8 @@ class WholeBodyController:
         if self.params['debug']:
             rospy.logdebug(f"Nearest waypoint index: {nearest_idx} of {len(self.merged_traj)}")
             rospy.logdebug(f"Number of obstacles: {len(predicted_obstacles)}")
+            # Visualize reference path (red)
+            self.publish_path_as_marker(ref.T, self.ref_path_pub, 1.0, 0.0, 0.0, 0)
             start_time = rospy.Time.now()
             
         # Solve MPC with CBF constraints and acceleration constraints
@@ -756,6 +784,9 @@ class WholeBodyController:
         if self.params['debug']:
             solve_time = (rospy.Time.now() - start_time).to_sec()
             rospy.logdebug(f"MPC solve time: {solve_time:.4f} seconds")
+            if X is not None:
+                # Visualize MPC planned path (green)
+                self.publish_path_as_marker(X.T, self.mpc_path_pub, 0.0, 1.0, 0.0, 1)
         
         if U is None:
             rospy.logerr("MPC solve failed. Stopping execution.")

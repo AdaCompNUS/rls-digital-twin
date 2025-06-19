@@ -514,9 +514,8 @@ class Fetch:
             world_frame (str): The name of the fixed world frame (e.g., 'map').
             robot_base_frame (str): The name of the robot's base frame (e.g., 'base_link').
         Returns:
-            tuple: (theta, x, y) current base parameters.
+            tuple: (x, y, theta) current base parameters.
         """
-        # <--- MODIFIED: This entire method is updated to use TF.
         # Lookup the transform from the world frame to the robot's base
         transform = self.tf_buffer.lookup_transform(
             world_frame, robot_base_frame, rospy.Time(0), rospy.Duration(1.0)
@@ -789,7 +788,7 @@ class Fetch:
 
                 # Interpolate both arm and base paths together
                 rospy.loginfo("Interpolating whole-body path...")
-                interpolation_resolution = 32
+                interpolation_resolution = 16
                 # interpolation_resolution = self.vamp_module.resolution()
                 whole_body_result.interpolate(interpolation_resolution)
                 rospy.loginfo(
