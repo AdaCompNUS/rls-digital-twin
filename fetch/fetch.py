@@ -18,6 +18,7 @@ import time
 import fetch.utils.transform_utils as transform_utils
 from fetch.utils.ik_solver_utils import WholeBodyIKSolver
 import tf.transformations
+from fetch.utils.control_utils import HeadController
 
 
 class Fetch:
@@ -86,6 +87,9 @@ class Fetch:
         )
         self.torso_client.wait_for_server()
 
+        # Initialize head controller
+        self.head_controller = HeadController()
+
         # Add TF2 buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -145,7 +149,7 @@ class Fetch:
             use_fixed_base=True,
         )
 
-    def move_to_pose(self, target_pose, planning_time=10.0, execution_time=10.0):
+    def move_to_pose(self, target_pose, max_attempts=100, manipulation_radius=1.0):
         """
         Move the robot to place its end effector at the target pose.
 
@@ -156,7 +160,6 @@ class Fetch:
 
         Args:
             target_pose: Target end effector pose (geometry_msgs/Pose)
-            planning_time: Maximum planning time in seconds
             execution_time: Time for trajectory execution in seconds
 
         Returns:
@@ -173,7 +176,7 @@ class Fetch:
 
         # Step 1: Solve whole-body IK
         rospy.loginfo("Step 1: Solving whole-body IK...")
-        ik_solution = self.solve_whole_body_ik(target_pose)
+        ik_solution = self.solve_whole_body_ik(target_pose, max_attempts=max_attempts, manipulation_radius=manipulation_radius)
 
         if ik_solution is None:
             rospy.logerr("Failed to find IK solution")
@@ -199,7 +202,7 @@ class Fetch:
         # Step 3: Execute the planned motion
         rospy.loginfo("Step 3: Executing whole-body motion...")
         execution_success = self.execute_whole_body_motion(
-            plan_result["arm_path"], plan_result["base_configs"], execution_time
+            plan_result["arm_path"], plan_result["base_configs"]
         )
 
         if not execution_success:
@@ -307,24 +310,17 @@ class Fetch:
             x (float): Base x position in meters
             y (float): Base y position in meters
         """
-        try:
-            self.base_theta = theta
-            self.base_x = x
-            self.base_y = y
+        self.base_theta = theta
+        self.base_x = x
+        self.base_y = y
 
-            # Update the base parameters in the VAMP module
-            self.vamp_module.set_base_params(theta, x, y)
+        # Update the base parameters in the VAMP module
+        self.vamp_module.set_base_params(theta, x, y)
 
-            rospy.loginfo(
-                f"Set base parameters: theta={theta:.6f}, x={x:.6f}, y={y:.6f}"
-            )
-            return True
-        except Exception as e:
-            rospy.logerr(f"Failed to set base parameters: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
-            return False
+        rospy.loginfo(
+            f"Set base parameters: theta={theta:.6f}, x={x:.6f}, y={y:.6f}"
+        )
+        return True
 
     def get_base_params(self, world_frame='map', robot_base_frame='base_link'):
         """
@@ -409,77 +405,65 @@ class Fetch:
 
     def _plan_path_with_vamp(self, current_joints, target_joints):
         """Plan a path using VAMP motion planner for 8-DOF configuration."""
-        try:
-            current_joints = np.array(current_joints, dtype=np.float64)
-            target_joints = np.array(target_joints, dtype=np.float64)
+        current_joints = np.array(current_joints, dtype=np.float64)
+        target_joints = np.array(target_joints, dtype=np.float64)
 
-            rospy.loginfo("Planning with VAMP (8-DOF):")
-            rospy.loginfo(f"Start config values: {current_joints}")
-            rospy.loginfo(f"Goal config values: {target_joints}")
+        rospy.loginfo("Planning with VAMP (8-DOF):")
+        rospy.loginfo(f"Start config values: {current_joints}")
+        rospy.loginfo(f"Goal config values: {target_joints}")
 
-            if len(current_joints) != 8 or len(target_joints) != 8:
-                rospy.logerr(
-                    f"Invalid joint dimensions. Expected 8, got {len(current_joints)} and {len(target_joints)}"
-                )
-                return None
+        if len(current_joints) != 8 or len(target_joints) != 8:
+            rospy.logerr(
+                f"Invalid joint dimensions. Expected 8, got {len(current_joints)} and {len(target_joints)}"
+            )
+            return None
 
-            result = self.planner_func(
-                current_joints,
-                target_joints,
-                self.env,
-                self.plan_settings,
-                self.sampler,
+        result = self.planner_func(
+            current_joints,
+            target_joints,
+            self.env,
+            self.plan_settings,
+            self.sampler,
+        )
+
+        if result.solved:
+            rospy.loginfo("Path planning succeeded!")
+
+            # Get planning statistics
+            simple = self.vamp_module.simplify(
+                result.path, self.env, self.simp_settings, self.sampler
             )
 
-            if result.solved:
-                rospy.loginfo("Path planning succeeded!")
+            stats = vamp.results_to_dict(result, simple)
+            rospy.loginfo(
+                f"""Planning statistics:
+                Planning Time: {stats['planning_time'].microseconds:8d}μs
+                Simplify Time: {stats['simplification_time'].microseconds:8d}μs
+                Total Time: {stats['total_time'].microseconds:8d}μs
+                Planning Iters: {stats['planning_iterations']}
+                Graph States: {stats['planning_graph_size']}
+                Path Length:
+                    Initial: {stats['initial_path_cost']:5.3f}
+                    Simplified: {stats['simplified_path_cost']:5.3f}"""
+            )
 
-                # Get planning statistics
-                simple = self.vamp_module.simplify(
-                    result.path, self.env, self.simp_settings, self.sampler
-                )
+            # Interpolate path
+            interpolate = 64
+            simple.path.interpolate(interpolate)
 
-                stats = vamp.results_to_dict(result, simple)
-                rospy.loginfo(
-                    f"""Planning statistics:
-                    Planning Time: {stats['planning_time'].microseconds:8d}μs
-                    Simplify Time: {stats['simplification_time'].microseconds:8d}μs
-                    Total Time: {stats['total_time'].microseconds:8d}μs
-                    Planning Iters: {stats['planning_iterations']}
-                    Graph States: {stats['planning_graph_size']}
-                    Path Length:
-                        Initial: {stats['initial_path_cost']:5.3f}
-                        Simplified: {stats['simplified_path_cost']:5.3f}"""
-                )
+            # Convert path to trajectory points
+            trajectory_points = []
+            for i in range(len(simple.path)):
+                point = simple.path[i]
+                if isinstance(point, list):
+                    trajectory_points.append(point)
+                elif isinstance(point, np.ndarray):
+                    trajectory_points.append(point.tolist())
+                else:
+                    trajectory_points.append(point.to_list())
 
-                # Interpolate path
-                interpolate = 64
-                simple.path.interpolate(interpolate)
-
-                # Convert path to trajectory points
-                trajectory_points = []
-                for i in range(len(simple.path)):
-                    point = simple.path[i]
-                    if isinstance(point, list):
-                        trajectory_points.append(point)
-                    elif isinstance(point, np.ndarray):
-                        trajectory_points.append(point.tolist())
-                    else:
-                        trajectory_points.append(point.to_list())
-
-                rospy.loginfo(f"Generated {len(trajectory_points)} trajectory points")
-                return trajectory_points
-
-            else:
-                rospy.logwarn(f"Path planning failed. Iterations: {result.iterations}")
-                return None
-
-        except Exception as e:
-            rospy.logerr(f"VAMP planning error: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
-            return None
+            rospy.loginfo(f"Generated {len(trajectory_points)} trajectory points")
+            return trajectory_points
 
     def plan_whole_body_motion(self, start_joints, goal_joints, start_base, goal_base):
         """`
@@ -494,204 +478,188 @@ class Fetch:
         Returns:
             dict: Planning results or None if planning failed
         """
-        try:
-            # Validate input dimensions
-            if len(start_joints) != 8 or len(goal_joints) != 8:
-                rospy.logerr(
-                    f"Invalid joint dimensions. Expected 8, got {len(start_joints)} and {len(goal_joints)}"
+        # Validate input dimensions
+        assert len(start_joints) == 8 and len(goal_joints) == 8, "Invalid joint dimensions. Expected 8, got {len(start_joints)} and {len(goal_joints)}"
+        assert len(start_base) == 3 and len(goal_base) == 3, "Invalid base dimensions. Expected 3, got {len(start_base)} and {len(goal_base)}"
+
+        start_joints = [round(val, 3) for val in start_joints]
+        goal_joints = [round(val, 3) for val in goal_joints]
+        start_base = [round(val, 3) for val in start_base]
+        goal_base = [round(val, 3) for val in goal_base]
+
+        rospy.loginfo("Planning whole body motion:")
+        rospy.loginfo(f"Start arm config: {start_joints}")
+        rospy.loginfo(f"Goal arm config: {goal_joints}")
+        rospy.loginfo(f"Start base config: {start_base}")
+        rospy.loginfo(f"Goal base config: {goal_base}")
+
+        # Use multilayer_rrtc for planning
+        result = self.vamp_module.multilayer_rrtc(
+            start_joints,  # arm start config array
+            goal_joints,  # arm goal config array
+            start_base,  # base start config array
+            goal_base,  # base goal config array
+            self.env,
+            self.plan_settings,
+            self.sampler,
+        )
+
+        if result.is_successful():
+            rospy.loginfo("Whole body motion planning succeeded!")
+
+            # Get the arm path from the multilayer planning result
+            arm_path = result.arm_result.path
+
+            # Get the base path from the result
+            base_configs = []
+            try:
+                # Extract the base path
+                base_path = result.base_path
+                for config in base_path:
+                    base_configs.append(config.config)
+            except Exception as e:
+                rospy.logwarn(
+                    f"Error extracting base_path: {e}, using alternative method"
                 )
-                return None
+                # Alternative method to get base path
+                if (
+                    hasattr(result.base_result, "path")
+                    and result.base_result.path is not None
+                ):
+                    base_path = result.base_result.path
+                    for i in range(len(base_path)):
+                        config = base_path[i]
+                        if hasattr(config, "to_list"):
+                            base_configs.append(config.to_list())
+                        elif hasattr(config, "config"):
+                            base_configs.append(config.config)
+                        else:
+                            base_configs.append(list(config))
 
-            if len(start_base) != 3 or len(goal_base) != 3:
-                rospy.logerr(
-                    f"Invalid base dimensions. Expected 3, got {len(start_base)} and {len(goal_base)}"
-                )
-                return None
+            # Convert base_configs to list of lists for whole_body_simplify
+            base_path_list = []
+            for config in base_configs:
+                if isinstance(config, list):
+                    base_path_list.append(config)
+                else:
+                    base_path_list.append(list(config))
 
-            start_joints = [round(val, 3) for val in start_joints]
-            goal_joints = [round(val, 3) for val in goal_joints]
-            start_base = [round(val, 3) for val in start_base]
-            goal_base = [round(val, 3) for val in goal_base]
+            # Convert arm path to a list of lists for whole_body_simplify
+            arm_path_list = []
+            for config in arm_path:
+                if isinstance(config, list):
+                    arm_path_list.append(config)
+                elif isinstance(config, np.ndarray):
+                    arm_path_list.append(config.tolist())
+                else:
+                    arm_path_list.append(config.to_list())
 
-            rospy.loginfo("Planning whole body motion:")
-            rospy.loginfo(f"Start arm config: {start_joints}")
-            rospy.loginfo(f"Goal arm config: {goal_joints}")
-            rospy.loginfo(f"Start base config: {start_base}")
-            rospy.loginfo(f"Goal base config: {goal_base}")
+            rospy.loginfo(
+                f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations"
+            )
 
-            # Use multilayer_rrtc for planning
-            result = self.vamp_module.multilayer_rrtc(
-                start_joints,  # arm start config array
-                goal_joints,  # arm goal config array
-                start_base,  # base start config array
-                goal_base,  # base goal config array
+            # Use whole_body_simplify instead of regular simplify
+            whole_body_result = self.vamp_module.whole_body_simplify(
+                arm_path_list,
+                base_path_list,
                 self.env,
-                self.plan_settings,
+                self.simp_settings,
                 self.sampler,
             )
 
-            if result.is_successful():
-                rospy.loginfo("Whole body motion planning succeeded!")
-
-                # Get the arm path from the multilayer planning result
-                arm_path = result.arm_result.path
-
-                # Get the base path from the result
-                base_configs = []
-                try:
-                    # Extract the base path
-                    base_path = result.base_path
-                    for config in base_path:
-                        base_configs.append(config.config)
-                except Exception as e:
-                    rospy.logwarn(
-                        f"Error extracting base_path: {e}, using alternative method"
-                    )
-                    # Alternative method to get base path
-                    if (
-                        hasattr(result.base_result, "path")
-                        and result.base_result.path is not None
-                    ):
-                        base_path = result.base_result.path
-                        for i in range(len(base_path)):
-                            config = base_path[i]
-                            if hasattr(config, "to_list"):
-                                base_configs.append(config.to_list())
-                            elif hasattr(config, "config"):
-                                base_configs.append(config.config)
-                            else:
-                                base_configs.append(list(config))
-
-                # Convert base_configs to list of lists for whole_body_simplify
-                base_path_list = []
-                for config in base_configs:
-                    if isinstance(config, list):
-                        base_path_list.append(config)
-                    else:
-                        base_path_list.append(list(config))
-
-                # Convert arm path to a list of lists for whole_body_simplify
-                arm_path_list = []
-                for config in arm_path:
-                    if isinstance(config, list):
-                        arm_path_list.append(config)
-                    elif isinstance(config, np.ndarray):
-                        arm_path_list.append(config.tolist())
-                    else:
-                        arm_path_list.append(config.to_list())
-
-                rospy.loginfo(
-                    f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations"
+            # Verify that arm and base paths have the same length after simplification
+            if not whole_body_result.validate_paths():
+                rospy.logwarn(
+                    "Simplified arm and base paths have different lengths!"
                 )
-
-                # Use whole_body_simplify instead of regular simplify
-                whole_body_result = self.vamp_module.whole_body_simplify(
-                    arm_path_list,
-                    base_path_list,
-                    self.env,
-                    self.simp_settings,
-                    self.sampler,
+                rospy.logwarn(
+                    f"Arm path: {len(whole_body_result.arm_result.path)}, Base path: {len(whole_body_result.base_path)}"
                 )
-
-                # Verify that arm and base paths have the same length after simplification
-                if not whole_body_result.validate_paths():
-                    rospy.logwarn(
-                        "Simplified arm and base paths have different lengths!"
-                    )
-                    rospy.logwarn(
-                        f"Arm path: {len(whole_body_result.arm_result.path)}, Base path: {len(whole_body_result.base_path)}"
-                    )
-                else:
-                    rospy.loginfo(
-                        f"Verified: Arm and base paths both have {len(whole_body_result.arm_result.path)} waypoints"
-                    )
-
-                # Interpolate both arm and base paths together
-                rospy.loginfo("Interpolating whole-body path...")
-                interpolation_resolution = 16
-                # interpolation_resolution = self.vamp_module.resolution()
-                whole_body_result.interpolate(interpolation_resolution)
-                rospy.loginfo(
-                    f"Interpolated with resolution {interpolation_resolution}"
-                )
-
-                # Get the interpolated paths
-                arm_path = whole_body_result.arm_result.path
-                base_path = whole_body_result.base_path
-
-                # Extract base configurations as lists
-                base_configs = []
-                for config in base_path:
-                    if hasattr(config, "config"):
-                        base_configs.append(config.config)
-                    elif hasattr(config, "to_list"):
-                        base_configs.append(config.to_list())
-                    else:
-                        base_configs.append(list(config))
-
-                # Create stats dictionary manually to avoid pandas dependency
-                stats = {
-                    "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
-                    "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
-                    "total_planning_time_ms": result.nanoseconds / 1e6,
-                    "planning_iterations": result.arm_result.iterations,
-                    "base_planning_iterations": result.base_result.iterations,
-                    "planning_graph_size": (
-                        sum(result.arm_result.size) if result.arm_result.size else 0
-                    ),
-                    "simplification_time_ms": whole_body_result.arm_result.nanoseconds
-                    / 1e6,
-                }
-
-                # Log statistics
-                rospy.loginfo(
-                    f"""Whole body planning statistics:
-                    Total Planning Time: {stats['total_planning_time_ms']:.3f}ms
-                    Arm Planning Time: {stats['arm_planning_time_ms']:.3f}ms
-                    Base Planning Time: {stats['base_planning_time_ms']:.3f}ms
-                    Simplification Time: {stats['simplification_time_ms']:.3f}ms
-                    Planning Iters: {stats['planning_iterations']}
-                    Base Planning Iters: {stats['base_planning_iterations']}
-                    Graph States: {stats['planning_graph_size']}"""
-                )
-
-                rospy.loginfo(f"Base path length: {len(base_configs)} waypoints")
-                rospy.loginfo(f"Arm path length: {len(arm_path)} waypoints")
-
-                # Return planning results
-                return {
-                    "success": True,
-                    "stats": stats,
-                    "arm_path": arm_path,
-                    "base_configs": base_configs,
-                }
             else:
-                rospy.logwarn("Whole body motion planning failed.")
+                rospy.loginfo(
+                    f"Verified: Arm and base paths both have {len(whole_body_result.arm_result.path)} waypoints"
+                )
 
-                # Create stats dictionary for failure case without pandas dependency
-                stats = {
-                    "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
-                    "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
-                    "total_planning_time_ms": result.nanoseconds / 1e6,
-                    "planning_iterations": result.arm_result.iterations,
-                    "base_planning_iterations": result.base_result.iterations,
-                    "planning_graph_size": (
-                        sum(result.arm_result.size) if result.arm_result.size else 0
-                    ),
-                }
+            # Interpolate both arm and base paths together
+            rospy.loginfo("Interpolating whole-body path...")
+            interpolation_resolution = 32
+            # interpolation_resolution = self.vamp_module.resolution()
+            whole_body_result.interpolate(interpolation_resolution)
+            rospy.loginfo(
+                f"Interpolated with resolution {interpolation_resolution}"
+            )
 
-                return {
-                    "success": False,
-                    "stats": stats,
-                    "arm_path": None,
-                    "base_configs": None,
-                }
-        except Exception as e:
-            rospy.logerr(f"Error in whole body motion planning: {e}")
-            import traceback
+            # Get the interpolated paths
+            arm_path = whole_body_result.arm_result.path
+            base_path = whole_body_result.base_path
 
-            rospy.logerr(traceback.format_exc())
-            return None
+            # Extract base configurations as lists
+            base_configs = []
+            for config in base_path:
+                if hasattr(config, "config"):
+                    base_configs.append(config.config)
+                elif hasattr(config, "to_list"):
+                    base_configs.append(config.to_list())
+                else:
+                    base_configs.append(list(config))
+
+            # Create stats dictionary manually to avoid pandas dependency
+            stats = {
+                "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
+                "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
+                "total_planning_time_ms": result.nanoseconds / 1e6,
+                "planning_iterations": result.arm_result.iterations,
+                "base_planning_iterations": result.base_result.iterations,
+                "planning_graph_size": (
+                    sum(result.arm_result.size) if result.arm_result.size else 0
+                ),
+                "simplification_time_ms": whole_body_result.arm_result.nanoseconds
+                / 1e6,
+            }
+
+            # Log statistics
+            rospy.loginfo(
+                f"""Whole body planning statistics:
+                Total Planning Time: {stats['total_planning_time_ms']:.3f}ms
+                Arm Planning Time: {stats['arm_planning_time_ms']:.3f}ms
+                Base Planning Time: {stats['base_planning_time_ms']:.3f}ms
+                Simplification Time: {stats['simplification_time_ms']:.3f}ms
+                Planning Iters: {stats['planning_iterations']}
+                Base Planning Iters: {stats['base_planning_iterations']}
+                Graph States: {stats['planning_graph_size']}"""
+            )
+
+            rospy.loginfo(f"Base path length: {len(base_configs)} waypoints")
+            rospy.loginfo(f"Arm path length: {len(arm_path)} waypoints")
+
+            # Return planning results
+            return {
+                "success": True,
+                "stats": stats,
+                "arm_path": arm_path,
+                "base_configs": base_configs,
+            }
+        else:
+            rospy.logwarn("Whole body motion planning failed.")
+
+            # Create stats dictionary for failure case without pandas dependency
+            stats = {
+                "arm_planning_time_ms": result.arm_result.nanoseconds / 1e6,
+                "base_planning_time_ms": result.base_result.nanoseconds / 1e6,
+                "total_planning_time_ms": result.nanoseconds / 1e6,
+                "planning_iterations": result.arm_result.iterations,
+                "base_planning_iterations": result.base_result.iterations,
+                "planning_graph_size": (
+                    sum(result.arm_result.size) if result.arm_result.size else 0
+                ),
+            }
+
+            return {
+                "success": False,
+                "stats": stats,
+                "arm_path": None,
+                "base_configs": None,
+            }
 
     def execute_whole_body_motion(self, arm_path, base_configs, duration=10.0):
         """
@@ -710,9 +678,7 @@ class Fetch:
         """
         try:
             # Validate input
-            if arm_path is None or base_configs is None:
-                rospy.logerr("Cannot execute motion: arm_path or base_configs is None")
-                return False
+            assert arm_path is not None and base_configs is not None, "Cannot execute motion: arm_path or base_configs is None"
 
             # Process arm path
             processed_arm_path = []
@@ -786,15 +752,12 @@ class Fetch:
             radius: sphere radius
             name: optional name for the sphere
         """
-        try:
-            position = list(position)  # Convert to list to ensure correct type
-            sphere = vamp.Sphere(position, radius)
-            if name:
-                sphere.name = name
-            self.env.add_sphere(sphere)
-            rospy.loginfo(f"Added sphere constraint at {position} with radius {radius}")
-        except Exception as e:
-            rospy.logerr(f"Failed to add sphere constraint: {str(e)}")
+        position = list(position)  # Convert to list to ensure correct type
+        sphere = vamp.Sphere(position, radius)
+        if name:
+            sphere.name = name
+        self.env.add_sphere(sphere)
+        rospy.loginfo(f"Added sphere constraint at {position} with radius {radius}")
 
     def add_box(self, position, half_extents, orientation_euler_xyz, name=None):
         """
@@ -806,21 +769,18 @@ class Fetch:
             orientation_euler_xyz: [roll, pitch, yaw] orientation in radians
             name: optional name for the box
         """
-        try:
-            # Convert numpy arrays to lists to ensure correct type
-            position = list(position)
-            half_extents = list(half_extents)
-            orientation_euler_xyz = list(orientation_euler_xyz)
+        # Convert numpy arrays to lists to ensure correct type
+        position = list(position)
+        half_extents = list(half_extents)
+        orientation_euler_xyz = list(orientation_euler_xyz)
 
-            cuboid = vamp.Cuboid(position, orientation_euler_xyz, half_extents)
-            if name:
-                cuboid.name = name
-            self.env.add_cuboid(cuboid)
-            rospy.loginfo(
-                f"Added box constraint at {position} with half_extents {half_extents}"
-            )
-        except Exception as e:
-            rospy.logerr(f"Failed to add box constraint: {str(e)}")
+        cuboid = vamp.Cuboid(position, orientation_euler_xyz, half_extents)
+        if name:
+            cuboid.name = name
+        self.env.add_cuboid(cuboid)
+        rospy.loginfo(
+            f"Added box constraint at {position} with half_extents {half_extents}"
+        )
 
     def add_capsule(
         self,
@@ -848,51 +808,45 @@ class Fetch:
             orientation_euler_xyz: [roll, pitch, yaw] orientation in radians (for center-based definition)
             name: optional name for the capsule
         """
-        try:
-            # Check which capsule definition method to use
-            if (
-                center is not None
-                and orientation_euler_xyz is not None
-                and radius is not None
-                and length is not None
-            ):
-                # Method 1: Using center, orientation, radius, and length
-                center = list(center)  # Convert to list to ensure correct type
-                orientation_euler_xyz = list(orientation_euler_xyz)
+        is_center_based = (
+            center is not None
+            and orientation_euler_xyz is not None
+            and radius is not None
+            and length is not None
+        )
+        is_endpoint_based = (
+            endpoint1 is not None and endpoint2 is not None and radius is not None
+        )
 
-                capsule = vamp.Capsule(center, orientation_euler_xyz, radius, length)
-                rospy.loginfo(
-                    f"Added capsule constraint at {center} with radius {radius} and length {length}"
-                )
+        assert is_center_based or is_endpoint_based, "Invalid parameters for add_capsule. Use either (center, orientation, radius, length) or (endpoint1, endpoint2, radius)."
 
-            elif endpoint1 is not None and endpoint2 is not None and radius is not None:
-                # Method 2: Using two endpoints and radius
-                endpoint1 = list(endpoint1)  # Convert to list to ensure correct type
-                endpoint2 = list(endpoint2)
+        # Check which capsule definition method to use
+        if is_center_based:
+            # Method 1: Using center, orientation, radius, and length
+            center = list(center)  # Convert to list to ensure correct type
+            orientation_euler_xyz = list(orientation_euler_xyz)
 
-                capsule = vamp.Capsule(endpoint1, endpoint2, radius)
-                rospy.loginfo(
-                    f"Added capsule constraint from {endpoint1} to {endpoint2} with radius {radius}"
-                )
+            capsule = vamp.Capsule(center, orientation_euler_xyz, radius, length)
+            rospy.loginfo(
+                f"Added capsule constraint at {center} with radius {radius} and length {length}"
+            )
 
-            else:
-                rospy.logerr(
-                    "Invalid parameters for add_capsule. Use either center+orientation+radius+length or endpoint1+endpoint2+radius"
-                )
-                return
+        elif is_endpoint_based:
+            # Method 2: Using two endpoints and radius
+            endpoint1 = list(endpoint1)  # Convert to list to ensure correct type
+            endpoint2 = list(endpoint2)
 
-            # Set name if provided
-            if name:
-                capsule.name = name
+            capsule = vamp.Capsule(endpoint1, endpoint2, radius)
+            rospy.loginfo(
+                f"Added capsule constraint from {endpoint1} to {endpoint2} with radius {radius}"
+            )
 
-            # Add capsule to environment
-            self.env.add_capsule(capsule)
+        # Set name if provided
+        if name:
+            capsule.name = name
 
-        except Exception as e:
-            rospy.logerr(f"Failed to add capsule constraint: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
+        # Add capsule to environment
+        self.env.add_capsule(capsule)
 
     def add_cylinder(self, position, radius, length, orientation_euler_xyz, name=None):
         """
@@ -905,20 +859,17 @@ class Fetch:
             orientation_euler_xyz: [roll, pitch, yaw] orientation in radians
             name: optional name for the cylinder
         """
-        try:
-            # Convert numpy arrays to lists to ensure correct type
-            position = list(position)
-            orientation_euler_xyz = list(orientation_euler_xyz)
+        # Convert numpy arrays to lists to ensure correct type
+        position = list(position)
+        orientation_euler_xyz = list(orientation_euler_xyz)
 
-            cylinder = vamp._core.Cylinder(
-                position, orientation_euler_xyz, radius, length
-            )
-            if name:
-                cylinder.name = name
-            self.env.add_capsule(cylinder)
-            rospy.loginfo(f"Added cylinder constraint at {position}")
-        except Exception as e:
-            rospy.logerr(f"Failed to add cylinder constraint: {str(e)}")
+        cylinder = vamp._core.Cylinder(
+            position, orientation_euler_xyz, radius, length
+        )
+        if name:
+            cylinder.name = name
+        self.env.add_capsule(cylinder)
+        rospy.loginfo(f"Added cylinder constraint at {position}")
 
     def add_pointcloud(
         self,
@@ -948,116 +899,95 @@ class Fetch:
         if not enable_filtering:
             rospy.loginfo("Point cloud filtering is DISABLED")
 
-        try:
-            # Convert to numpy array if not already
-            if not isinstance(points, np.ndarray):
-                points = np.array(points, dtype=np.float64)
+        # Convert to numpy array if not already
+        if not isinstance(points, np.ndarray):
+            points = np.array(points, dtype=np.float64)
 
-            # Determine whether to apply filtering
-            if enable_filtering:
-                rospy.loginfo(
-                    f"Processing {len(points)} points for collision checking..."
+        # Determine whether to apply filtering
+        if enable_filtering:
+            rospy.loginfo(
+                f"Processing {len(points)} points for collision checking..."
+            )
+
+            # Get robot-specific parameters
+            filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
+            filter_cull_radius = 1.4  # Default max reach radius for Fetch
+
+            # Define bounding box for filtering
+            bbox_lo = np.array(filter_origin) - filter_cull_radius
+            bbox_hi = np.array(filter_origin) + filter_cull_radius
+
+            # Filter the point cloud
+            filtered_pc, filter_time_us = self._filter_pointcloud(
+                points,
+                filter_radius,
+                filter_cull_radius,
+                filter_origin,
+                bbox_lo,
+                bbox_hi,
+                filter_cull,
+            )
+
+            filter_time = filter_time_us / 1e6  # Convert to seconds
+
+            # Check if filtering was successful
+            if len(filtered_pc) == 0:
+                rospy.logwarn(
+                    "Filtering resulted in zero points, using simple sphere obstacle instead"
                 )
-
-                # Get robot-specific parameters
-                filter_origin = [0.0, 0.0, 0.0]  # Default filter origin (robot base)
-                filter_cull_radius = 1.4  # Default max reach radius for Fetch
-
-                # Define bounding box for filtering
-                bbox_lo = np.array(filter_origin) - filter_cull_radius
-                bbox_hi = np.array(filter_origin) + filter_cull_radius
-
-                # Filter the point cloud
-                filtered_pc, filter_time_us = self._filter_pointcloud(
-                    points,
-                    filter_radius,
-                    filter_cull_radius,
-                    filter_origin,
-                    bbox_lo,
-                    bbox_hi,
-                    filter_cull,
-                )
-
-                filter_time = filter_time_us / 1e6  # Convert to seconds
-
-                # Check if filtering was successful
-                if len(filtered_pc) == 0:
-                    rospy.logwarn(
-                        "Filtering resulted in zero points, using simple sphere obstacle instead"
-                    )
-                    # Add a simple sphere as a fallback
-                    sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
-                    sphere.name = "fallback_obstacle"
-                    self.env.add_sphere(sphere)
-                    processing_time = time() - start_time
-                    return processing_time
-
-                points_to_use = filtered_pc
-                rospy.loginfo(f"Using {len(points_to_use)} filtered points")
-            else:
-                # Skip filtering
-                points_to_use = points
-                filter_time = 0
-                rospy.loginfo(f"Using all {len(points_to_use)} points (no filtering)")
-
-            # Define robot-specific radius parameters
-            r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
-            point_radius = 0.03  # Default point radius for collision checking
-
-            # Add the filtered point cloud to the environment
-            try:
-                # Ensure points are in list format for vamp
-                if isinstance(points_to_use, np.ndarray):
-                    points_to_use = points_to_use.tolist()
-
-                add_start_time = time()
-                build_time = self.env.add_pointcloud(
-                    points_to_use, r_min, r_max, point_radius
-                )
-                add_time = time() - add_start_time
-
+                # Add a simple sphere as a fallback
+                sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
+                sphere.name = "fallback_obstacle"
+                self.env.add_sphere(sphere)
                 processing_time = time() - start_time
-
-                if enable_filtering:
-                    rospy.loginfo(
-                        f"""Pointcloud processing stats:
-                        Original size: {len(points)}
-                        Filtered size: {len(points_to_use)}
-                        Filter time: {filter_time:.3f}s
-                        Build time: {build_time * 1e-6:.3f}s
-                        Add time: {add_time:.3f}s
-                        Total processing time: {processing_time:.3f}s"""
-                    )
-                else:
-                    rospy.loginfo(
-                        f"""Pointcloud processing stats (NO FILTERING):
-                        Points processed: {len(points)}
-                        Build time: {build_time * 1e-6:.3f}s
-                        Add time: {add_time:.3f}s
-                        Total processing time: {processing_time:.3f}s
-                        Processing rate: {len(points) / processing_time:.1f} points/sec"""
-                    )
-
                 return processing_time
 
-            except Exception as e:
-                rospy.logerr(f"Failed to add point cloud to environment: {e}")
-                # Add a simple obstacle as fallback
-                rospy.logwarn("Adding fallback obstacles instead")
-                self.add_box(
-                    position=[0.5, 0.0, 0.5],
-                    half_extents=[0.2, 0.2, 0.2],
-                    orientation_euler_xyz=[0, 0, 0],
-                    name="fallback_obstacle",
-                )
-                return -1
+            points_to_use = filtered_pc
+            rospy.loginfo(f"Using {len(points_to_use)} filtered points")
+        else:
+            # Skip filtering
+            points_to_use = points
+            filter_time = 0
+            rospy.loginfo(f"Using all {len(points_to_use)} points (no filtering)")
 
-        except Exception as e:
-            rospy.logerr(f"Failed to add pointcloud: {str(e)}")
-            import traceback
+        # Define robot-specific radius parameters
+        r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
+        point_radius = 0.03  # Default point radius for collision checking
 
-            rospy.logerr(traceback.format_exc())
-            return -1
+        # Add the filtered point cloud to the environment
+        # Ensure points are in list format for vamp
+        if isinstance(points_to_use, np.ndarray):
+            points_to_use = points_to_use.tolist()
+
+        add_start_time = time()
+        build_time = self.env.add_pointcloud(
+            points_to_use, r_min, r_max, point_radius
+        )
+        add_time = time() - add_start_time
+
+        processing_time = time() - start_time
+
+        if enable_filtering:
+            rospy.loginfo(
+                f"""Pointcloud processing stats:
+                Original size: {len(points)}
+                Filtered size: {len(points_to_use)}
+                Filter time: {filter_time:.3f}s
+                Build time: {build_time * 1e-6:.3f}s
+                Add time: {add_time:.3f}s
+                Total processing time: {processing_time:.3f}s"""
+            )
+        else:
+            rospy.loginfo(
+                f"""Pointcloud processing stats (NO FILTERING):
+                Points processed: {len(points)}
+                Build time: {build_time * 1e-6:.3f}s
+                Add time: {add_time:.3f}s
+                Total processing time: {processing_time:.3f}s
+                Processing rate: {len(points) / processing_time:.1f} points/sec"""
+            )
+
+        return processing_time
 
     def _filter_pointcloud(
         self,
@@ -1086,77 +1016,69 @@ class Fetch:
         """
         start_time = time.time()
 
-        try:
-            # Convert to numpy array if it's not already
-            points_np = (
-                np.array(points, dtype=np.float64)
-                if not isinstance(points, np.ndarray)
-                else points.astype(np.float64)
-            )
+        # Convert to numpy array if it's not already
+        points_np = (
+            np.array(points, dtype=np.float64)
+            if not isinstance(points, np.ndarray)
+            else points.astype(np.float64)
+        )
 
-            # Make sure points are valid
-            if points_np.size == 0 or points_np.shape[1] != 3:
-                rospy.logwarn(f"Invalid point cloud shape: {points_np.shape}")
-                return [], int((time.time() - start_time) * 1e6)
-
-            # Handle potential NaN or infinite values
-            mask = np.isfinite(points_np).all(axis=1)
-            points_np = points_np[mask]
-
-            # Manually downsample instead of using Open3D's voxel_down_sample
-            # Create a voxel grid
-            voxel_indices = np.floor(points_np / filter_radius).astype(int)
-
-            # Use a dictionary to keep track of points per voxel
-            voxel_dict = {}
-            for i, idx in enumerate(voxel_indices):
-                idx_tuple = tuple(idx)
-                if idx_tuple not in voxel_dict:
-                    voxel_dict[idx_tuple] = i
-
-            # Get indices of downsampled points
-            downsampled_indices = list(voxel_dict.values())
-            points_filtered = points_np[downsampled_indices]
-
-            # If culling is enabled, remove points outside the robot's reach
-            if filter_cull and len(points_filtered) > 0:
-                # Keep points within bounding box
-                origin = np.array(filter_origin)
-
-                mask_x = (points_filtered[:, 0] >= bbox_lo[0]) & (
-                    points_filtered[:, 0] <= bbox_hi[0]
-                )
-                mask_y = (points_filtered[:, 1] >= bbox_lo[1]) & (
-                    points_filtered[:, 1] <= bbox_hi[1]
-                )
-                mask_z = (points_filtered[:, 2] >= bbox_lo[2]) & (
-                    points_filtered[:, 2] <= bbox_hi[2]
-                )
-                mask_bbox = mask_x & mask_y & mask_z
-
-                # Apply distance-based filtering
-                distances = np.linalg.norm(points_filtered - origin, axis=1)
-                mask_distance = distances <= filter_cull_radius
-
-                # Combine masks
-                mask = mask_bbox & mask_distance
-                points_filtered = points_filtered[mask]
-
-            rospy.loginfo(
-                f"Filtered point cloud from {len(points_np)} to {len(points_filtered)} points"
-            )
-
-            filter_time = int(
-                (time.time() - start_time) * 1e6
-            )  # Convert to microseconds
-            return points_filtered.tolist(), filter_time
-
-        except Exception as e:
-            rospy.logerr(f"Error in point cloud filtering: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
+        # Make sure points are valid
+        if points_np.size == 0 or points_np.shape[1] != 3:
+            rospy.logwarn(f"Invalid point cloud shape: {points_np.shape}")
             return [], int((time.time() - start_time) * 1e6)
+
+        # Handle potential NaN or infinite values
+        mask = np.isfinite(points_np).all(axis=1)
+        points_np = points_np[mask]
+
+        # Manually downsample instead of using Open3D's voxel_down_sample
+        # Create a voxel grid
+        voxel_indices = np.floor(points_np / filter_radius).astype(int)
+
+        # Use a dictionary to keep track of points per voxel
+        voxel_dict = {}
+        for i, idx in enumerate(voxel_indices):
+            idx_tuple = tuple(idx)
+            if idx_tuple not in voxel_dict:
+                voxel_dict[idx_tuple] = i
+
+        # Get indices of downsampled points
+        downsampled_indices = list(voxel_dict.values())
+        points_filtered = points_np[downsampled_indices]
+
+        # If culling is enabled, remove points outside the robot's reach
+        if filter_cull and len(points_filtered) > 0:
+            # Keep points within bounding box
+            origin = np.array(filter_origin)
+
+            mask_x = (points_filtered[:, 0] >= bbox_lo[0]) & (
+                points_filtered[:, 0] <= bbox_hi[0]
+            )
+            mask_y = (points_filtered[:, 1] >= bbox_lo[1]) & (
+                points_filtered[:, 1] <= bbox_hi[1]
+            )
+            mask_z = (points_filtered[:, 2] >= bbox_lo[2]) & (
+                points_filtered[:, 2] <= bbox_hi[2]
+            )
+            mask_bbox = mask_x & mask_y & mask_z
+
+            # Apply distance-based filtering
+            distances = np.linalg.norm(points_filtered - origin, axis=1)
+            mask_distance = distances <= filter_cull_radius
+
+            # Combine masks
+            mask = mask_bbox & mask_distance
+            points_filtered = points_filtered[mask]
+
+        rospy.loginfo(
+            f"Filtered point cloud from {len(points_np)} to {len(points_filtered)} points"
+        )
+
+        filter_time = int(
+            (time.time() - start_time) * 1e6
+        )  # Convert to microseconds
+        return points_filtered.tolist(), filter_time
 
     def send_joint_values(self, target_joints, duration=5.0):
         """
@@ -1166,117 +1088,98 @@ class Fetch:
             target_joints: List of 8 joint positions [torso + 7 arm joints]
             duration: Time to execute trajectory
         """
-        try:
-            if len(target_joints) != 8:
-                raise ValueError("Expected 8 joint positions [torso + 7 arm joints]")
+        assert len(target_joints) == 8, "Expected 8 joint positions [torso + 7 arm joints]"
 
-            # Get current joints
+        # Get current joints
+        current_joints = self.get_current_planning_joints()
+
+        max_attempts = 5  # You can adjust this number based on your needs
+        attempt_count = 0
+
+        while current_joints is None:
             current_joints = self.get_current_planning_joints()
-            # if current_joints is None:
-            #     rospy.logerr("Failed to get current joint positions")
-            #     return None
+            if current_joints is None:
+                attempt_count += 1
+                rospy.logwarn(
+                    f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})"
+                )
+                assert attempt_count < max_attempts, "Max attempts reached. Failed to get current joint positions"
+                rospy.sleep(0.5)  # Add a small delay between attempts
 
-            max_attempts = 5  # You can adjust this number based on your needs
-            attempt_count = 0
+        rospy.loginfo(f"Planning motion to target configuration: {target_joints}")
 
-            while current_joints is None:
-                current_joints = self.get_current_planning_joints()
-                if current_joints is None:
-                    attempt_count += 1
-                    rospy.logwarn(
-                        f"Failed to get current joint positions (attempt {attempt_count}/{max_attempts})"
-                    )
-                    if attempt_count >= max_attempts:
-                        rospy.logerr(
-                            "Max attempts reached. Failed to get current joint positions"
-                        )
-                        return False
-                    rospy.sleep(0.5)  # Add a small delay between attempts
+        # Plan path using VAMP
+        trajectory_points = self._plan_path_with_vamp(current_joints, target_joints)
+        assert trajectory_points is not None, "Failed to plan path with VAMP"
 
-            rospy.loginfo(f"Planning motion to target configuration: {target_joints}")
+        # Split trajectory points for torso and arm
+        torso_points = []  # First joint
+        arm_points = []  # Last 7 joints
 
-            # Plan path using VAMP
-            trajectory_points = self._plan_path_with_vamp(current_joints, target_joints)
+        # Extract points for each controller
+        for point in trajectory_points:
+            torso_points.append([point[0]])  # First joint (torso)
+            arm_points.append(point[1:])  # Remaining joints (arm)
 
-            if trajectory_points is None:
-                rospy.logerr("Failed to plan path with VAMP")
-                return None
+        # Create torso trajectory
+        torso_goal = FollowJointTrajectoryGoal()
+        torso_goal.trajectory = JointTrajectory()
+        torso_goal.trajectory.joint_names = ["torso_lift_joint"]
 
-            # Split trajectory points for torso and arm
-            torso_points = []  # First joint
-            arm_points = []  # Last 7 joints
+        # Create arm trajectory
+        arm_goal = FollowJointTrajectoryGoal()
+        arm_goal.trajectory = JointTrajectory()
+        arm_goal.trajectory.joint_names = [
+            "shoulder_pan_joint",
+            "shoulder_lift_joint",
+            "upperarm_roll_joint",
+            "elbow_flex_joint",
+            "forearm_roll_joint",
+            "wrist_flex_joint",
+            "wrist_roll_joint",
+        ]
 
-            # Extract points for each controller
-            for point in trajectory_points:
-                torso_points.append([point[0]])  # First joint (torso)
-                arm_points.append(point[1:])  # Remaining joints (arm)
+        # Add trajectory points
+        point_duration = duration / len(trajectory_points)
+        for i in range(len(trajectory_points)):
+            # Torso trajectory point
+            torso_point = JointTrajectoryPoint()
+            torso_point.positions = torso_points[i]
+            torso_point.velocities = [0.0]
+            torso_point.accelerations = [0.0]
+            torso_point.time_from_start = rospy.Duration(point_duration * (i + 1))
+            torso_goal.trajectory.points.append(torso_point)
 
-            # Create torso trajectory
-            torso_goal = FollowJointTrajectoryGoal()
-            torso_goal.trajectory = JointTrajectory()
-            torso_goal.trajectory.joint_names = ["torso_lift_joint"]
+            # Arm trajectory point
+            arm_point = JointTrajectoryPoint()
+            arm_point.positions = arm_points[i]
+            arm_point.velocities = [0.0] * 7
+            arm_point.accelerations = [0.0] * 7
+            arm_point.time_from_start = rospy.Duration(point_duration * (i + 1))
+            arm_goal.trajectory.points.append(arm_point)
 
-            # Create arm trajectory
-            arm_goal = FollowJointTrajectoryGoal()
-            arm_goal.trajectory = JointTrajectory()
-            arm_goal.trajectory.joint_names = [
-                "shoulder_pan_joint",
-                "shoulder_lift_joint",
-                "upperarm_roll_joint",
-                "elbow_flex_joint",
-                "forearm_roll_joint",
-                "wrist_flex_joint",
-                "wrist_roll_joint",
-            ]
+        # Execute trajectories
+        rospy.loginfo(
+            f"Executing trajectory with {len(trajectory_points)} points..."
+        )
 
-            # Add trajectory points
-            point_duration = duration / len(trajectory_points)
-            for i in range(len(trajectory_points)):
-                # Torso trajectory point
-                torso_point = JointTrajectoryPoint()
-                torso_point.positions = torso_points[i]
-                torso_point.velocities = [0.0]
-                torso_point.accelerations = [0.0]
-                torso_point.time_from_start = rospy.Duration(point_duration * (i + 1))
-                torso_goal.trajectory.points.append(torso_point)
+        # Send goals to both controllers
+        self.torso_client.send_goal(torso_goal)
+        self.arm_traj_client.send_goal(arm_goal)
 
-                # Arm trajectory point
-                arm_point = JointTrajectoryPoint()
-                arm_point.positions = arm_points[i]
-                arm_point.velocities = [0.0] * 7
-                arm_point.accelerations = [0.0] * 7
-                arm_point.time_from_start = rospy.Duration(point_duration * (i + 1))
-                arm_goal.trajectory.points.append(arm_point)
+        # Wait for completion
+        torso_success = self.torso_client.wait_for_result(
+            rospy.Duration(duration + 5.0)
+        )
+        arm_success = self.arm_traj_client.wait_for_result(
+            rospy.Duration(duration + 5.0)
+        )
 
-            # Execute trajectories
-            rospy.loginfo(
-                f"Executing trajectory with {len(trajectory_points)} points..."
-            )
-
-            # Send goals to both controllers
-            self.torso_client.send_goal(torso_goal)
-            self.arm_traj_client.send_goal(arm_goal)
-
-            # Wait for completion
-            torso_success = self.torso_client.wait_for_result(
-                rospy.Duration(duration + 5.0)
-            )
-            arm_success = self.arm_traj_client.wait_for_result(
-                rospy.Duration(duration + 5.0)
-            )
-
-            if torso_success and arm_success:
-                rospy.loginfo("Trajectory execution completed successfully")
-                return self.arm_traj_client.get_result()
-            else:
-                rospy.logwarn("Trajectory execution failed or timed out")
-                return None
-
-        except Exception as e:
-            rospy.logerr(f"Error in send_joint_values: {str(e)}")
-            import traceback
-
-            rospy.logerr(traceback.format_exc())
+        if torso_success and arm_success:
+            rospy.loginfo("Trajectory execution completed successfully")
+            return self.arm_traj_client.get_result()
+        else:
+            rospy.logwarn("Trajectory execution failed or timed out")
             return None
 
     def move_base(self, linear_x, angular_z):
@@ -1373,3 +1276,14 @@ class Fetch:
         self.gripper_client.wait_for_result()
 
         return self.gripper_client.get_result()
+
+    def move_head(self, pan, tilt, duration=1.0):
+        """
+        Moves the robot's head to a given pan and tilt position.
+
+        Args:
+            pan (float): The target pan position for the head.
+            tilt (float): The target tilt position for the head.
+            duration (float): The duration of the movement in seconds.
+        """
+        self.head_controller.move_head(pan, tilt, duration)

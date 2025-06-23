@@ -721,7 +721,7 @@ class WholeBodyController:
     def construct_reference_from_waypoint(self, start_idx):
         """Construct reference trajectory starting from the given waypoint index"""
         ref = np.zeros((self.mpc.nx, self.mpc.N+1))
-        start_idx += 5
+        start_idx += 10
         for i in range(self.mpc.N+1):
             idx = min(start_idx + i, len(self.merged_traj) - 1)
             ref[:,i] = self.merged_traj[idx]

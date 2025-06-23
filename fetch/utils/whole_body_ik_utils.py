@@ -254,7 +254,7 @@ def generate_ik_seed(pose, costmap, costmap_metadata, lower_limits, upper_limits
 
     # Initialize the seed array with midpoints as fallback
     seed = [
-        (l + u) / 2.0 for l, u in zip(lower_limits, upper_limits)
+        (l + u) / 2.0 for l, u in zip(lower_limits, upper_limits)  # noqa: E741
     ]
 
     # Try to use costmap for base position sampling
