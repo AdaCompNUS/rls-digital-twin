@@ -19,6 +19,7 @@ import fetch.utils.transform_utils as transform_utils
 from fetch.utils.ik_solver_utils import WholeBodyIKSolver
 import tf.transformations
 from fetch.utils.control_utils import HeadController
+from std_msgs.msg import Bool
 
 
 class Fetch:
@@ -87,12 +88,12 @@ class Fetch:
         )
         self.torso_client.wait_for_server()
 
-        # Initialize head controller
-        self.head_controller = HeadController()
-
         # Add TF2 buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
+        # Initialize head controller
+        self.head_controller = HeadController(self.tf_buffer)
 
         # Define joint names (8-DOF for planning)
         self.planning_joint_names = [
@@ -118,6 +119,14 @@ class Fetch:
         )
         self.base_path_pub = rospy.Publisher(
             "/fetch_whole_body_controller/base_path", JointTrajectory, queue_size=1
+        )
+
+        # Subscriber for whole body execution completion
+        self.execution_finished = False
+        self.execution_finished_sub = rospy.Subscriber(
+            "/fetch_whole_body_controller/execution_finished",
+            Bool,
+            self._execution_finished_callback,
         )
 
         # Initialize the whole-body IK solver
@@ -267,6 +276,11 @@ class Fetch:
         #     rospy.logdebug(
         #         f"Ignoring joint state message with only {len(msg.name)} joints"
         #     )
+
+    def _execution_finished_callback(self, msg):
+        """Callback for the whole body execution finished signal."""
+        if msg.data:
+            self.execution_finished = True
 
     def _init_vamp_planner(self):
         """
@@ -582,7 +596,7 @@ class Fetch:
 
             # Interpolate both arm and base paths together
             rospy.loginfo("Interpolating whole-body path...")
-            interpolation_resolution = 32
+            interpolation_resolution = 64
             # interpolation_resolution = self.vamp_module.resolution()
             whole_body_result.interpolate(interpolation_resolution)
             rospy.loginfo(
@@ -661,17 +675,16 @@ class Fetch:
                 "base_configs": None,
             }
 
-    def execute_whole_body_motion(self, arm_path, base_configs, duration=10.0):
+    def execute_whole_body_motion(self, arm_path, base_configs):
         """
         Execute a whole body motion plan with the Fetch robot.
 
         This method sends the planned trajectories to the C++ whole body controller
-        for coordinated whole-body motion.
+        for coordinated whole-body motion and waits for a completion signal.
 
         Args:
             arm_path: List of arm joint configurations (8-DOF including torso)
             base_configs: List of base configurations [x, y, theta]
-            duration: Total duration of the motion execution in seconds
 
         Returns:
             bool: True if execution succeeded, False otherwise
@@ -679,6 +692,9 @@ class Fetch:
         try:
             # Validate input
             assert arm_path is not None and base_configs is not None, "Cannot execute motion: arm_path or base_configs is None"
+
+            # Reset completion flag before starting
+            self.execution_finished = False
 
             # Process arm path
             processed_arm_path = []
@@ -703,8 +719,11 @@ class Fetch:
             base_traj_msg.header.stamp = rospy.Time.now()
             base_traj_msg.joint_names = ["x", "y", "theta"]  # Base has 3 DOF
 
-            # Calculate time spacing for points
-            time_step = duration / len(processed_arm_path)
+            # Calculate time spacing for points based on a reasonable duration estimate
+            # This is only for the JointTrajectoryPoint `time_from_start` which some controllers use for timing.
+            # The actual execution is handled by the MPC controller's rate.
+            estimated_duration = len(processed_arm_path) * 0.1  # Heuristic
+            time_step = estimated_duration / len(processed_arm_path) if len(processed_arm_path) > 0 else 0
 
             # Add points to both trajectories
             for i in range(len(processed_arm_path)):
@@ -727,14 +746,19 @@ class Fetch:
             # Give time for controller to receive and process the message
             rospy.sleep(0.5)
 
-            # The C++ controller is handling execution, so we just wait for completion
+            # Wait for completion signal from the controller
             rospy.loginfo(
-                f"Whole body motion execution started, waiting {duration + 2.0} seconds..."
+                "Whole body motion execution started, waiting for completion signal..."
             )
-            rospy.sleep(duration + 2.0)  # Add a small buffer time for completion
+            while not self.execution_finished and not rospy.is_shutdown():
+                rospy.sleep(0.1)
 
-            rospy.loginfo("Whole body motion execution completed")
-            return True
+            if self.execution_finished:
+                rospy.loginfo("Whole body motion execution completed successfully.")
+                return True
+            else:
+                rospy.logwarn("ROS shutdown while waiting for motion completion.")
+                return False
 
         except Exception as e:
             rospy.logerr(f"Error in whole body motion execution: {e}")
@@ -1287,3 +1311,14 @@ class Fetch:
             duration (float): The duration of the movement in seconds.
         """
         self.head_controller.move_head(pan, tilt, duration)
+
+    def point_head_at(self, target_point, frame_id="map", duration=1.0):
+        """
+        Points the robot's head towards a target point in the specified frame.
+
+        Args:
+            target_point (list): [x, y, z] coordinates of the target.
+            frame_id (str): The TF frame ID of the target point (default: 'map').
+            duration (float): The duration of the head movement in seconds.
+        """
+        self.head_controller.point_head_at(target_point, frame_id, duration)

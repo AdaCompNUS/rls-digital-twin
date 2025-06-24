@@ -358,7 +358,7 @@ def run_ik_test(robot, test_case_idx, pose_array):
 
     # Execute the planned motion
     execution_result = robot.execute_whole_body_motion(
-        plan_result["arm_path"], plan_result["base_configs"], TRAJECTORY_DURATION
+        plan_result["arm_path"], plan_result["base_configs"]
     )
 
     execution_time = time.time() - execution_start_time

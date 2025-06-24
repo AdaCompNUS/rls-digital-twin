@@ -12,6 +12,7 @@ import tf.transformations as tf_trans
 import sensor_msgs.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, PointField
 import struct
+from std_msgs.msg import Bool
 
 
 class WholeBodyMPC:
@@ -38,6 +39,9 @@ class WholeBodyMPC:
         # Slack weights
         self.slack_dynamics_weight = params.get('slack_dynamics_weight', 1000.0)
         self.slack_cbf_weight = params.get('slack_obstacle_weight', 200.0)
+        
+        # Terminal cost weights
+        self.P_state = np.array(params['P_state'])
         
         # Obstacle avoidance parameters
         self.safe_distance = params.get('safe_distance', 0.3)
@@ -105,7 +109,6 @@ class WholeBodyMPC:
             frenet_pos_error = ca.mtimes(Rot, world_frame_error[:2])
             
             # Extract the meaningful, decoupled errors
-            along_track_error = frenet_pos_error[0] # Error along the desired direction of travel
             cross_track_error = frenet_pos_error[1] # Error perpendicular to the desired direction
 
             # Yaw error cost using the (1 - cos(error)) metric for robustness
@@ -116,8 +119,8 @@ class WholeBodyMPC:
             joint_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (joint_error * joint_error)
 
             # Combined weighted state cost using the Frenet-frame errors
-            # Re-interpreting Q_state[0] for along-track and Q_state[1] for cross-track error
-            frenet_pos_cost = self.Q_state[0] * along_track_error**2 + self.Q_state[1] * cross_track_error**2
+            # Penalize cross-track error to stay on the path, not along-track error.
+            frenet_pos_cost = self.Q_state[1] * cross_track_error**2
             
             state_cost = frenet_pos_cost + yaw_error_cost + joint_cost
 
@@ -130,12 +133,20 @@ class WholeBodyMPC:
             # Penalties for slack variables
             cost += self.slack_dynamics_weight * ca.sumsqr(slack_dynamics[:,i])
         
-        # finial_yaw_error = X[2, self.N] - X_ref[2, self.N]
-        # finial_yaw_error_cost = self.Q_state[2] * (1 - ca.cos(finial_yaw_error))
-        # finial_joint_error = X[3:, self.N] - X_ref[3:, self.N]
-        # finial_joint_error_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (finial_joint_error * finial_joint_error)
-        # finial_frenet_pos_cost = self.Q_state[0] * finial_yaw_error**2 + self.Q_state[1] * finial_joint_error_cost
-        # cost += (finial_frenet_pos_cost + finial_yaw_error_cost + finial_joint_error_cost)
+        # Add a terminal cost to ensure the final state is reached accurately
+        terminal_error = X[:, self.N] - X_ref[:, self.N]
+        
+        # Terminal position cost (world frame)
+        terminal_pos_cost = self.P_state[0] * terminal_error[0]**2 + self.P_state[1] * terminal_error[1]**2
+
+        # Terminal yaw cost (using 1-cos to handle wrapping)
+        terminal_yaw_cost = self.P_state[2] * (1 - ca.cos(terminal_error[2]))
+        
+        # Terminal joint cost
+        terminal_joint_error = terminal_error[3:]
+        terminal_joint_cost = self.P_state[3:].reshape(1, self.nx-3) @ (terminal_joint_error * terminal_joint_error)
+
+        cost += terminal_pos_cost + terminal_yaw_cost + terminal_joint_cost
         
         # Add penalty for CBF slack variables - only for active obstacles
         # for i in range(self.M_CBF):
@@ -323,6 +334,7 @@ class WholeBodyController:
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
         self.joint_vel_pub = rospy.Publisher(
             '/arm_with_torso_controller/joint_velocity_controller/command', JointState, queue_size=1)
+        self.execution_finished_pub = rospy.Publisher('/fetch_whole_body_controller/execution_finished', Bool, queue_size=1)
         
         # Visualization publishers
         self.obstacle_marker_pub = rospy.Publisher('/obstacle_visualization', MarkerArray, queue_size=1)
@@ -387,6 +399,7 @@ class WholeBodyController:
             'obstacle_weight': rospy.get_param('~obstacle_weight', 100.0),
             'slack_obstacle_weight': rospy.get_param('~slack_obstacle_weight', 200.0),
             'gamma_k': rospy.get_param('~gamma_k', 0.1),  # CBF decay rate
+            'P_state': rospy.get_param('~P_state', [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]),
             'debug': rospy.get_param('~debug', True),
             'map_frame': rospy.get_param('~map_frame', 'map'),
             'base_frame': rospy.get_param('~base_frame', 'base_link')
@@ -813,6 +826,10 @@ class WholeBodyController:
         if self.execution_timer is not None:
             self.execution_timer.shutdown()
             self.execution_timer = None
+
+        # Publish completion signal
+        self.execution_finished_pub.publish(Bool(data=True))
+        rospy.loginfo("Published trajectory completion signal.")
 
     def publish_commands(self, u):
         """Publish velocity commands to the robot"""

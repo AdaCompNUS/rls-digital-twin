@@ -1,8 +1,8 @@
 # MPC Controller Parameters
 # Control parameters
-control_rate: 10
+control_rate: 30
 prediction_horizon: 15
-trajectory_end_threshold: 0.07 # The tolerance for reaching the final goal state
+trajectory_end_threshold: 0.1 # The tolerance for reaching the final goal state
 
 # Velocity limits
 max_linear_vel: 0.5
