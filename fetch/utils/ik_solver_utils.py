@@ -302,4 +302,62 @@ class WholeBodyIKSolver:
             }
         else:
             rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
-            return None 
+            return None
+
+    def solve_arm_ik(
+        self,
+        target_pose,
+        arm_seed=None,
+        max_attempts=10
+    ):
+        """
+        Solves IK for the arm only, from base_link to the end-effector, without collision checking.
+        The target pose is assumed to be in the base_link frame.
+
+        Args:
+            target_pose (geometry_msgs.msg.Pose): The target pose for the end-effector in the base_link frame.
+            arm_seed (list, optional): An initial guess for the arm joint angles (8-DOF).
+                                    If None, a random seed will be generated. Defaults to None.
+            max_attempts (int): Number of attempts with different random seeds if no seed is provided.
+
+        Returns:
+            list: A list of 8 joint values for the arm if a solution is found, otherwise None.
+        """
+        if not self.arm_ik_solver:
+            rospy.logerr("Arm IK solver not initialized, cannot solve.")
+            return None
+
+        rospy.loginfo(
+            "Solving arm-only IK for pose in base_link frame: "
+            + f"position [{target_pose.position.x:.3f}, {target_pose.position.y:.3f}, {target_pose.position.z:.3f}], "
+            + f"orientation [{target_pose.orientation.x:.3f}, {target_pose.orientation.y:.3f}, "
+            + f"{target_pose.orientation.z:.3f}, {target_pose.orientation.w:.3f}]"
+        )
+
+        for attempt in range(max_attempts):
+            current_seed = arm_seed
+            if current_seed is None:
+                # Generate a random seed within joint limits.
+                current_seed = [np.random.uniform(L, U) for L, U in zip(self.arm_lower_limits, self.arm_upper_limits)]
+                rospy.loginfo(f"Generated random seed for attempt {attempt+1}/{max_attempts}")
+
+            if not current_seed:
+                rospy.logerr("Could not generate seed.")
+                return None
+
+            arm_solution = self.arm_ik_solver.get_ik(
+                current_seed,
+                target_pose.position.x, target_pose.position.y, target_pose.position.z,
+                target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w
+            )
+
+            if arm_solution:
+                rospy.loginfo(f"Found arm-only IK solution on attempt {attempt+1}")
+                return list(arm_solution)
+
+            if arm_seed is not None:
+                # if a seed was provided and it failed, don't try again.
+                break
+
+        rospy.logerr(f"Failed to find arm-only IK solution after {max_attempts} attempts.")
+        return None 

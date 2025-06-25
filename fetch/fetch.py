@@ -4,7 +4,7 @@ import numpy as np
 import vamp
 import actionlib
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist, PoseStamped, Pose
 from control_msgs.msg import (
     FollowJointTrajectoryAction,
     FollowJointTrajectoryGoal,
@@ -156,6 +156,72 @@ class Fetch:
             max_attempts=max_attempts,
             manipulation_radius=manipulation_radius,
             use_fixed_base=True,
+        )
+
+    def solve_ik(self, target_pose, frame_id='map', arm_seed=None, max_attempts=10):
+        """
+        Solve inverse kinematics for the arm, from base_link to the end-effector.
+        The target pose can be provided in any frame, and will be transformed to base_link.
+
+        Args:
+            target_pose: Target end effector pose (geometry_msgs/Pose).
+            frame_id: The TF frame of the target_pose. Defaults to 'map'.
+            arm_seed (list, optional): An initial guess for the arm joint angles (8-DOF).
+            max_attempts: Maximum number of sampling attempts.
+
+        Returns:
+            list: A list of 8 joint values for the arm if a solution is found, otherwise None.
+        """
+        rospy.loginfo(f"Solving arm-only IK for pose in '{frame_id}' frame.")
+
+        target_pose_in_base_link = target_pose
+
+        if frame_id != 'base_link':
+            try:
+                # Get the transform from the source frame to the base_link frame
+                transform_stamped = self.tf_buffer.lookup_transform(
+                    'base_link',      # Target frame
+                    frame_id,         # Source frame
+                    rospy.Time(),    # Get the latest transform
+                    rospy.Duration(1.0) # Wait for up to 1 second
+                )
+                
+                # Convert transform to a 4x4 matrix
+                r = transform_stamped.transform.rotation
+                t = transform_stamped.transform.translation
+                T_base_link__frame = transform_utils.quaternion_matrix([r.x, r.y, r.z, r.w])
+                T_base_link__frame[:3, 3] = [t.x, t.y, t.z]
+
+                # Convert target_pose to a 4x4 matrix
+                p = target_pose.position
+                o = target_pose.orientation
+                T_frame__ee = transform_utils.quaternion_matrix([o.x, o.y, o.z, o.w])
+                T_frame__ee[:3, 3] = [p.x, p.y, p.z]
+                
+                # Transform the pose: T_base_link__ee = T_base_link__frame * T_frame__ee
+                T_base_link__ee = np.dot(T_base_link__frame, T_frame__ee)
+
+                # Convert the resulting matrix back to a Pose message
+                pos_final = transform_utils.translation_from_matrix(T_base_link__ee)
+                quat_final = transform_utils.quaternion_from_matrix(T_base_link__ee)
+                
+                target_pose_in_base_link = Pose()
+                target_pose_in_base_link.position.x = pos_final[0]
+                target_pose_in_base_link.position.y = pos_final[1]
+                target_pose_in_base_link.position.z = pos_final[2]
+                target_pose_in_base_link.orientation.x = quat_final[0]
+                target_pose_in_base_link.orientation.y = quat_final[1]
+                target_pose_in_base_link.orientation.z = quat_final[2]
+                target_pose_in_base_link.orientation.w = quat_final[3]
+                
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+                rospy.logerr(f"Failed to transform pose from '{frame_id}' to 'base_link': {e}")
+                return None
+        
+        return self.ik_solver.solve_arm_ik(
+            target_pose=target_pose_in_base_link,
+            arm_seed=arm_seed,
+            max_attempts=max_attempts
         )
 
     def move_to_pose(self, target_pose, max_attempts=100, manipulation_radius=1.0):
@@ -354,8 +420,12 @@ class Fetch:
         rot = transform.transform.rotation
         # Convert quaternion to Euler angles to get the yaw
         quaternion = [rot.x, rot.y, rot.z, rot.w]
-        euler = tf.transformations.euler_from_quaternion(quaternion)
-        yaw = euler[2]  # theta
+        # Using numpy to get the yaw from a quaternion
+        x, y, z, w = quaternion
+        t3 = +2.0 * (w * z + x * y)
+        t4 = +1.0 - 2.0 * (y * y + z * z)
+        yaw = np.arctan2(t3, t4)
+        
         # Return in the (x, y) order expected by set_base_params and VAMP
         return (trans.x, trans.y, yaw)
 
@@ -397,7 +467,7 @@ class Fetch:
         transform_stamped = self.tf_buffer.lookup_transform(
             world_frame,     # Target frame
             camera_frame,    # Source frame
-            rospy.Time(0),   # Get the latest transform
+            rospy.Time(),   # Get the latest transform
             rospy.Duration(1.0)  # Wait for up to 1 second
         )
         
