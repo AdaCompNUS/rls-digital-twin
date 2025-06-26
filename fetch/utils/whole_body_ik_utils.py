@@ -138,7 +138,6 @@ def grid_to_world(grid_x, grid_y, costmap_metadata):
         rospy.logerr(f"Error in grid_to_world conversion: {e}")
         return None, None
 
-
 def find_valid_base_positions(ee_pose, costmap, costmap_metadata, manipulation_radius=1.0, cost_threshold=0.3):
     """
     Find valid base positions for the robot using the costmap.
@@ -154,14 +153,36 @@ def find_valid_base_positions(ee_pose, costmap, costmap_metadata, manipulation_r
         valid_positions: List of valid base positions (world_x, world_y, cost_value, theta)
                          or None if costmap is not available or errors occur.
     """
+    target_point = [ee_pose.position.x, ee_pose.position.y, ee_pose.position.z]
+    return find_valid_base_positions_from_point(
+        target_point, costmap, costmap_metadata, manipulation_radius, cost_threshold
+    )
+
+def find_valid_base_positions_from_point(
+    target_point, costmap, costmap_metadata, manipulation_radius=1.0, cost_threshold=0.3
+):
+    """
+    Find valid base positions for the robot using the costmap from a 3D point.
+
+    Args:
+        target_point: A 3D point [x, y, z]
+        costmap: The costmap numpy array.
+        costmap_metadata: Dictionary containing costmap metadata.
+        manipulation_radius: Radius of the manipulation range in meters
+        cost_threshold: Minimum cost value to consider a cell valid (0-1)
+
+    Returns:
+        valid_positions: List of valid base positions (world_x, world_y, cost_value, theta)
+                         or None if costmap is not available or errors occur.
+    """
     if costmap is None or costmap_metadata is None:
         rospy.logwarn("Costmap not available for finding valid base positions")
         return None
 
+    pos_x, pos_y = target_point[0], target_point[1]
+
     # Convert end effector position to grid coordinates
-    ee_grid_x, ee_grid_y = world_to_grid(
-        ee_pose.position.x, ee_pose.position.y, costmap_metadata
-    )
+    ee_grid_x, ee_grid_y = world_to_grid(pos_x, pos_y, costmap_metadata)
 
     if ee_grid_x is None or ee_grid_y is None:
         rospy.logwarn("Failed to convert end effector position to grid coordinates")
@@ -175,7 +196,7 @@ def find_valid_base_positions(ee_pose, costmap, costmap_metadata, manipulation_r
         or ee_grid_y >= costmap_metadata["height"]
     ):
         rospy.logwarn(
-            f"End effector position ({ee_pose.position.x}, {ee_pose.position.y}) is outside costmap bounds"
+            f"End effector position ({pos_x}, {pos_y}) is outside costmap bounds"
         )
         return None
 
@@ -206,11 +227,11 @@ def find_valid_base_positions(ee_pose, costmap, costmap_metadata, manipulation_r
             if valid_mask[y, x]:
                 world_x, world_y = grid_to_world(x, y, costmap_metadata)
                 if world_x is None or world_y is None:
-                    continue # Skip if conversion failed
+                    continue  # Skip if conversion failed
 
                 # Calculate orientation towards the end effector
-                dx = ee_pose.position.x - world_x
-                dy = ee_pose.position.y - world_y
+                dx = pos_x - world_x
+                dy = pos_y - world_y
                 theta = math.atan2(dy, dx)
 
                 # Get the cost value (lower is better for sampling)
@@ -296,11 +317,17 @@ def generate_ik_seed(pose, costmap, costmap_metadata, lower_limits, upper_limits
 
     # Use midpoint values for arm joints (remaining DOFs) - indices 3 through 10 for 8-DOF arm
     # The initial seed calculation already set these to midpoints.
-    # Optionally, use random uniform sampling within limits for arm joints:
-    # for i in range(3, len(seed)): # Iterate through arm joints
-    #    if i < len(lower_limits): # Check index bounds
-    #        seed[i] = np.random.uniform(lower_limits[i], upper_limits[i])
-
+    #
+    # To avoid camera view occlusion, we can tune the shoulder joints
+    # shoulder_pan_joint (seed[3]) and shoulder_lift_joint (seed[4])
+    #
+    # Set shoulder_pan_joint to swing the arm to the side
+    seed[3] = 1.3  # rad
+    #
+    # Set shoulder_lift_joint to keep the arm low
+    if len(lower_limits) > 4:
+        seed[4] = lower_limits[4] + 0.2  # rad
+    
     rospy.loginfo(
         f"Deterministic seed generated: {[round(val, 3) for val in seed]}"
     )

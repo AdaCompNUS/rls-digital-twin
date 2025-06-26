@@ -158,6 +158,21 @@ class Fetch:
             use_fixed_base=True,
         )
 
+    def get_valid_base_config_for_point(self, target_point, manipulation_radius=1.0):
+        """
+        Get a valid base configuration for reaching a 3D point.
+
+        Args:
+            target_point: [x, y, z] target point in the world frame.
+            manipulation_radius: Radius for base position sampling.
+
+        Returns:
+            list: A valid base configuration [x, y, theta], or None if no solution is found.
+        """
+        return self.ik_solver.get_valid_base_config(
+            target_point, manipulation_radius=manipulation_radius
+        )
+
     def solve_ik(self, target_pose, frame_id='map', arm_seed=None, max_attempts=10):
         """
         Solve inverse kinematics for the arm, from base_link to the end-effector.

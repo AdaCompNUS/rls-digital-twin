@@ -83,6 +83,40 @@ class WholeBodyIKSolver:
         else:
             rospy.logwarn("No costmap path provided. Proceeding without costmap features.")
 
+    def get_valid_base_config(self, target_point, manipulation_radius=1.0, cost_threshold=0.3):
+        """
+        Find the best valid base configuration for a given 3D target point.
+
+        Args:
+            target_point: [x, y, z] target point in the world.
+            manipulation_radius: Radius for base position sampling.
+            cost_threshold: Minimum cost value to consider a cell valid.
+
+        Returns:
+            list: The best valid base configuration [x, y, theta], or None if none found.
+        """
+        if self.costmap is None or self.costmap_metadata is None:
+            rospy.logwarn("Costmap not available for finding valid base positions.")
+            return None
+
+        valid_positions = ik_utils.find_valid_base_positions_from_point(
+            target_point,
+            self.costmap,
+            self.costmap_metadata,
+            manipulation_radius,
+            cost_threshold,
+        )
+
+        if valid_positions:
+            # Sort by cost (lower is better)
+            sorted_positions = sorted(valid_positions, key=lambda pos: pos[2])
+            best_position = sorted_positions[0]
+            # Return x, y, theta
+            return [best_position[0], best_position[1], best_position[3]]
+        else:
+            rospy.logwarn("No valid base positions found for the target point.")
+            return None
+
     def solve(
         self,
         vamp_module,
