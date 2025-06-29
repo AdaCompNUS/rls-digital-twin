@@ -2,23 +2,19 @@
 import rospy
 import casadi as ca
 import numpy as np
-from geometry_msgs.msg import Twist, PointStamped, Point
-from sensor_msgs.msg import JointState, LaserScan
+from geometry_msgs.msg import Twist, Point
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import Marker
 import tf2_ros
-import tf2_geometry_msgs
 import tf.transformations as tf_trans
-import sensor_msgs.point_cloud2 as pc2
-from sensor_msgs.msg import PointCloud2, PointField
-import struct
 from std_msgs.msg import Bool
 
 
 class WholeBodyMPC:
     def __init__(self, params):
         self.N = params['prediction_horizon']
-        self.dt = 0.1
+        self.dt = 0.05
         
         # Dimensions
         self.n_arm_joints = 7
@@ -38,20 +34,9 @@ class WholeBodyMPC:
         
         # Slack weights
         self.slack_dynamics_weight = params.get('slack_dynamics_weight', 1000.0)
-        self.slack_cbf_weight = params.get('slack_obstacle_weight', 200.0)
         
         # Terminal cost weights
         self.P_state = np.array(params['P_state'])
-        
-        # Obstacle avoidance parameters
-        self.safe_distance = params.get('safe_distance', 0.3)
-        self.voxel_size = params.get('voxel_size', 0.2)
-        self.max_obstacle_points = params.get('max_obstacle_points', 10)
-        self.lidar_max_range = params.get('lidar_max_range', 1.0)
-        
-        # CBF parameters
-        self.gamma_k = params.get('gamma_k', 0.1)  # CBF decay rate
-        self.M_CBF = min(3, self.N)  # Number of steps to apply CBF (using full horizon)
         
         # Debug flag
         self.debug = params['debug']
@@ -60,10 +45,6 @@ class WholeBodyMPC:
             rospy.loginfo("Initialized MPC with weights:")
             rospy.loginfo(f"Q_state = {self.Q_state}")
             rospy.loginfo(f"R_control = {self.R_control}")
-            rospy.loginfo(f"Obstacle params: safe_distance={self.safe_distance}, gamma_k={self.gamma_k}")
-        
-        # Initialize obstacle data
-        self.obstacle_positions = []
         
         # Set up the optimization problem
         self.setup_optimization()
@@ -82,14 +63,6 @@ class WholeBodyMPC:
         # Parameters for reference trajectory and initial state
         X_ref = opti.parameter(self.nx, self.N+1)
         X0 = opti.parameter(self.nx)
-        
-        # Parameters for obstacles
-        obstacle_params = opti.parameter(2, self.max_obstacle_points * (self.N+1))
-        obstacle_mask = opti.parameter(self.max_obstacle_points)
-        
-        # Add slack variables for CBF constraints
-        cbf_slack = opti.variable(self.max_obstacle_points, self.M_CBF)
-        opti.subject_to(opti.bounded(0, cbf_slack, 1.0))
         
         # Cost function
         cost = 0
@@ -148,11 +121,6 @@ class WholeBodyMPC:
 
         cost += terminal_pos_cost + terminal_yaw_cost + terminal_joint_cost
         
-        # Add penalty for CBF slack variables - only for active obstacles
-        # for i in range(self.M_CBF):
-        #     for j in range(self.max_obstacle_points):
-        #         cost += self.slack_cbf_weight * obstacle_mask[j] * ca.sumsqr(cbf_slack[j,i])
-        
         # Dynamics constraints with slack variables (unchanged)
         for i in range(self.N):
             x = X[:,i]
@@ -181,24 +149,6 @@ class WholeBodyMPC:
         # Initial state constraint (no slack) (unchanged)
         opti.subject_to(X[:,0] == X0)
         
-        # Define the barrier function (unchanged)
-        def h(x_, y_):
-            return (x_[0] - y_[0])**2 + (x_[1] - y_[1])**2 - self.safe_distance**2
-        
-        # Add CBF constraints for each obstacle (unchanged)
-        # for j in range(self.max_obstacle_points):
-        #     for i in range(self.M_CBF):
-        #         robot_curr = X[:2, i]
-        #         robot_next = X[:2, i+1]
-        #         obs_curr_x = obstacle_params[0, j*(self.N+1) + i]
-        #         obs_curr_y = obstacle_params[1, j*(self.N+1) + i]
-        #         obs_next_x = obstacle_params[0, j*(self.N+1) + i+1]
-        #         obs_next_y = obstacle_params[1, j*(self.N+1) + i+1]
-        #         obs_curr = ca.vertcat(obs_curr_x, obs_curr_y)
-        #         obs_next = ca.vertcat(obs_next_x, obs_next_y)
-        #         cbf_expression = h(robot_next, obs_next) - (1 - self.gamma_k) * h(robot_curr, obs_curr) + cbf_slack[j, i]
-        #         opti.subject_to(obstacle_mask[j] * cbf_expression + (1 - obstacle_mask[j]) * 1e6 >= 0)
-        
         # Set the objective (unchanged)
         opti.minimize(cost)
         
@@ -209,65 +159,13 @@ class WholeBodyMPC:
         self.U = U
         self.X_ref = X_ref
         self.X0 = X0
-        self.obstacle_params = obstacle_params
-        self.obstacle_mask = obstacle_mask
         self.slack_dynamics = slack_dynamics
-        # self.cbf_slack = cbf_slack
     
-    def update_obstacles(self, obstacle_positions):
-        """Update obstacle positions"""
-        self.obstacle_positions = obstacle_positions
-        
-        if self.debug and len(self.obstacle_positions) > 0:
-            rospy.logdebug(f"Updated {len(self.obstacle_positions)} obstacle positions")
-
-    def solve(self, x0, x_ref, predicted_obstacles=None):
-        """Solve the MPC problem with CBF constraints"""
+    def solve(self, x0, x_ref):
+        """Solve the MPC problem"""
         # Set parameter values
         self.opti.set_value(self.X0, x0)
         self.opti.set_value(self.X_ref, x_ref)
-        
-        # If no predictions provided, assume obstacles are static
-        if predicted_obstacles is None:
-            predicted_obstacles = []
-            for obs_pos in self.obstacle_positions:
-                # Create a trajectory by repeating the current position
-                obs_traj = [obs_pos] * (self.N + 1)
-                predicted_obstacles.append(obs_traj)
-        
-        # Create obstacle mask (1 for active obstacles, 0 for inactive)
-        obstacle_mask = np.zeros(self.max_obstacle_points)
-        num_actual_obstacles = min(len(predicted_obstacles), self.max_obstacle_points)
-        
-        # Set 1s for active obstacles (up to the actual count)
-        obstacle_mask[:num_actual_obstacles] = 1.0
-        
-        # Set the obstacle mask parameter
-        self.opti.set_value(self.obstacle_mask, obstacle_mask)
-        
-        if self.debug:
-            rospy.logdebug(f"Setting actual obstacle count to: {num_actual_obstacles}")
-            rospy.logdebug(f"Obstacle mask: {obstacle_mask}")
-        
-        # Pack obstacle trajectories into the parameter array
-        obstacle_data = np.zeros((2, self.max_obstacle_points * (self.N+1)))
-        
-        for j, obs_traj in enumerate(predicted_obstacles):
-            if j >= self.max_obstacle_points:
-                break  # Don't exceed maximum number of obstacles
-                
-            for i in range(self.N+1):
-                if i < len(obs_traj):
-                    # Store x,y for each obstacle at each time step
-                    obstacle_data[0, j*(self.N+1) + i] = obs_traj[i][0]  # x
-                    obstacle_data[1, j*(self.N+1) + i] = obs_traj[i][1]  # y
-                else:
-                    # If trajectory is shorter than horizon, repeat last position
-                    obstacle_data[0, j*(self.N+1) + i] = obs_traj[-1][0]
-                    obstacle_data[1, j*(self.N+1) + i] = obs_traj[-1][1]
-        
-        # Set obstacle parameter values
-        self.opti.set_value(self.obstacle_params, obstacle_data)
         
         # Set solver options
         opts = {
@@ -291,16 +189,9 @@ class WholeBodyMPC:
         # Debug information
         if self.debug:
             slack_dynamics = sol.value(self.slack_dynamics)
-            # cbf_slack = sol.value(self.cbf_slack)
             
             if np.any(slack_dynamics > 1e-6):
                 rospy.logwarn(f"Dynamics slack active, max: {np.max(slack_dynamics)}")
-                
-            # if np.any(cbf_slack > 1e-6):
-            #     # Only check slacks for active obstacles
-            #     active_slacks = cbf_slack[:num_actual_obstacles, :]
-            #     if np.any(active_slacks > 1e-6):
-            #         rospy.logwarn(f"CBF slack active, max: {np.max(active_slacks)}")
         
         return X_opt, U_opt
 
@@ -315,8 +206,7 @@ class WholeBodyController:
         self.base_traj = []
         self.merged_traj = []
         self.executing = False
-        self.lidar_data = None
-        self.obstacle_positions = []
+        self.last_waypoint_idx = 0
         
         # Create TF buffer with longer cache time for better performance
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
@@ -336,10 +226,6 @@ class WholeBodyController:
             '/arm_with_torso_controller/joint_velocity_controller/command', JointState, queue_size=1)
         self.execution_finished_pub = rospy.Publisher('/fetch_whole_body_controller/execution_finished', Bool, queue_size=1)
         
-        # Visualization publishers
-        self.obstacle_marker_pub = rospy.Publisher('/obstacle_visualization', MarkerArray, queue_size=1)
-        self.cloud_pub = rospy.Publisher('/processed_obstacle_cloud', PointCloud2, queue_size=1)
-        
         # Debug publishers for paths
         if self.params['debug']:
             self.ref_path_pub = rospy.Publisher('/ref_path_viz', Marker, queue_size=1)
@@ -348,7 +234,6 @@ class WholeBodyController:
         
         # Subscribe to sensor topics
         rospy.Subscriber('/joint_states', JointState, self.joint_cb)
-        rospy.Subscriber('/base_scan', LaserScan, self.lidar_cb)
         
         # Subscribe to trajectory topics
         rospy.Subscriber('/fetch_whole_body_controller/arm_path', JointTrajectory, self.arm_cb)
@@ -368,13 +253,7 @@ class WholeBodyController:
         # Create timers for execution and obstacle processing
         self.execution_timer = None
         
-        # Process obstacles separately at a potentially different rate
-        self.obstacle_timer = rospy.Timer(
-            rospy.Duration(1.0 / 5.0),  # Process obstacles at 5 Hz
-            self.process_obstacles_cb
-        )
-        
-        rospy.loginfo("Whole Body Controller initialized with CBF-based obstacle avoidance and acceleration constraints")
+        rospy.loginfo("Whole Body Controller initialized")
 
     def load_parameters(self):
         return {
@@ -392,13 +271,6 @@ class WholeBodyController:
             'base_pos_threshold': rospy.get_param('~base_pos_threshold', 0.05),
             'min_waypoint_distance': rospy.get_param('~min_waypoint_distance', 0.05),
             'trajectory_end_threshold': rospy.get_param('~trajectory_end_threshold', 0.05),
-            'lidar_max_range': rospy.get_param('~lidar_max_range', 1.0),
-            'safe_distance': rospy.get_param('~safe_distance', 0.3),
-            'voxel_size': rospy.get_param('~voxel_size', 0.2),
-            'max_obstacle_points': rospy.get_param('~max_obstacle_points', 10),
-            'obstacle_weight': rospy.get_param('~obstacle_weight', 100.0),
-            'slack_obstacle_weight': rospy.get_param('~slack_obstacle_weight', 200.0),
-            'gamma_k': rospy.get_param('~gamma_k', 0.1),  # CBF decay rate
             'P_state': rospy.get_param('~P_state', [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]),
             'debug': rospy.get_param('~debug', True),
             'map_frame': rospy.get_param('~map_frame', 'map'),
@@ -424,213 +296,6 @@ class WholeBodyController:
         # Only process messages with length > 2 to filter out gripper messages
         if len(msg.name) > 2:
             self.joint_states = dict(zip(msg.name, msg.position))
-
-    def lidar_cb(self, msg):
-        """Store the latest lidar scan"""
-        self.lidar_data = msg
-
-    def process_obstacles_cb(self, event=None):
-        """Process lidar data to extract obstacle points - run as a separate timer"""
-        if self.lidar_data is None:
-            return
-            
-        self.process_lidar_data()
-
-    def process_lidar_data(self):
-        """Process lidar data using proper TF transformations"""
-        if self.lidar_data is None:
-            return
-            
-        # Get the transform from laser frame to map frame at the latest available time.
-        # Using rospy.Time(0) requests the latest transform, avoiding the extrapolation error
-        # which occurs when the scan's timestamp is too old for the tf buffer.
-        transform = self.tf_buffer.lookup_transform(
-            "map",                                # Target frame
-            self.lidar_data.header.frame_id,      # Source frame (e.g., laser_link)
-            rospy.Time(0),                        # FIX: Ask for the latest available transform
-            rospy.Duration(0.1)                   # Timeout
-        )
-        
-        # Filter valid ranges
-        ranges = np.array(self.lidar_data.ranges)
-        # Correctly create the angles array to match the length of ranges
-        angles = np.arange(
-            self.lidar_data.angle_min,
-            self.lidar_data.angle_max,
-            self.lidar_data.angle_increment
-        )[:len(ranges)]
-        
-        valid_indices = np.where(
-            (ranges > self.lidar_data.range_min) & 
-            (ranges < self.params['lidar_max_range']) &
-            (~np.isnan(ranges)) & 
-            (~np.isinf(ranges))
-        )[0]
-        
-        if len(valid_indices) == 0:
-            self.obstacle_positions = []
-            self.mpc.update_obstacles(self.obstacle_positions)
-            return
-            
-        # Extract valid ranges and angles
-        valid_ranges = ranges[valid_indices]
-        valid_angles = angles[valid_indices]
-        
-        # Convert to cartesian coordinates (in lidar frame)
-        x_lidar = valid_ranges * np.cos(valid_angles)
-        y_lidar = valid_ranges * np.sin(valid_angles)
-        
-        # Create list of points for transformation
-        points_map = []
-        
-        # Transform each point individually using tf2
-        for i in range(len(x_lidar)):
-            point_lidar = PointStamped()
-            point_lidar.header = self.lidar_data.header
-            point_lidar.point.x = x_lidar[i]
-            point_lidar.point.y = y_lidar[i]
-            point_lidar.point.z = 0.0
-            
-            # Transform the point to map frame
-            point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
-            
-            # Store the transformed point
-            points_map.append((point_map.point.x, point_map.point.y))
-        
-        # Group points into voxels using a dictionary for efficiency
-        voxel_dict = {}
-        
-        for x, y in points_map:
-            voxel_x = int(x / self.params['voxel_size'])
-            voxel_y = int(y / self.params['voxel_size'])
-            
-            voxel_key = (voxel_x, voxel_y)
-            if voxel_key not in voxel_dict:
-                voxel_dict[voxel_key] = []
-                
-            voxel_dict[voxel_key].append((x, y))
-        
-        # Calculate centroid of each voxel
-        obstacle_positions = []
-        
-        for voxel_points in voxel_dict.values():
-            x_sum = sum(p[0] for p in voxel_points)
-            y_sum = sum(p[1] for p in voxel_points)
-            count = len(voxel_points)
-            
-            centroid = (x_sum / count, y_sum / count)
-            obstacle_positions.append(centroid)
-        
-        # Sort by distance to robot
-        current_base_pose = self.get_base_pose_from_tf()
-        if current_base_pose is not None:
-            robot_x, robot_y, _ = current_base_pose
-            obstacle_positions.sort(key=lambda p: (p[0] - robot_x)**2 + (p[1] - robot_y)**2)
-        
-        # Keep only the closest obstacles
-        obstacle_positions = obstacle_positions[:self.params['max_obstacle_points']]
-        
-        # Update MPC with new obstacle positions
-        self.obstacle_positions = obstacle_positions
-        self.mpc.update_obstacles(obstacle_positions)
-        
-        # Publish visualization
-        self.publish_obstacle_markers()
-        self.publish_point_cloud(points_map)
-
-    def publish_obstacle_markers(self):
-        """Publish visualization markers for detected obstacles"""
-        marker_array = MarkerArray()
-        
-        for i, (x, y) in enumerate(self.obstacle_positions):
-            marker = Marker()
-            marker.header.frame_id = "map"
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "obstacles"
-            marker.id = i
-            marker.type = Marker.CYLINDER
-            marker.action = Marker.ADD
-            
-            marker.pose.position.x = x
-            marker.pose.position.y = y
-            marker.pose.position.z = 0.1  # Slightly above ground
-            
-            marker.pose.orientation.w = 1.0
-            
-            # Size
-            marker.scale.x = self.params['safe_distance'] * 2  # Diameter
-            marker.scale.y = self.params['safe_distance'] * 2  # Diameter
-            marker.scale.z = 0.1  # Height
-            
-            # Color (red, semi-transparent)
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 0.5
-            
-            marker.lifetime = rospy.Duration(0.5)  # half-second lifetime
-            
-            marker_array.markers.append(marker)
-        
-        self.obstacle_marker_pub.publish(marker_array)
-
-    def publish_point_cloud(self, points):
-        """Publish a point cloud for visualization"""
-        header = rospy.Header()
-        header.stamp = rospy.Time.now()
-        header.frame_id = "map"
-        
-        # Create point cloud fields
-        fields = [
-            PointField('x', 0, PointField.FLOAT32, 1),
-            PointField('y', 4, PointField.FLOAT32, 1),
-            PointField('z', 8, PointField.FLOAT32, 1),
-            PointField('rgba', 12, PointField.UINT32, 1),
-        ]
-        
-        # Create the point cloud data
-        cloud_data = []
-        for x, y in points:
-            # RGBA value (blue color)
-            rgba = struct.unpack('I', struct.pack('BBBB', 0, 0, 255, 255))[0]
-            cloud_data.append([x, y, 0.1, rgba])  # z slightly above ground
-            
-        # Create and publish the point cloud
-        cloud = pc2.create_cloud(header, fields, cloud_data)
-        self.cloud_pub.publish(cloud)
-
-    def publish_path_as_marker(self, path, publisher, r, g, b, marker_id):
-        """Publish a path as a LINE_STRIP marker."""
-        if not self.params['debug']:
-            return
-
-        marker = Marker()
-        marker.header.frame_id = self.map_frame
-        marker.header.stamp = rospy.Time.now()
-        marker.ns = "path_viz"
-        marker.id = marker_id
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.05  # Line width
-
-        marker.color.r = r
-        marker.color.g = g
-        marker.color.b = b
-        marker.color.a = 1.0
-
-        marker.lifetime = rospy.Duration(0.5)
-
-        # Path is expected to be a list of states (e.g., from X.T)
-        for state in path:
-            p = Point()
-            p.x = state[0]
-            p.y = state[1]
-            p.z = 0.1  # slightly above ground
-            marker.points.append(p)
-        
-        publisher.publish(marker)
 
     def arm_cb(self, msg):
         self.arm_traj = {
@@ -675,13 +340,14 @@ class WholeBodyController:
         if self.executing:
             return
             
+        self.last_waypoint_idx = 0
         self.executing = True
         # Create a timer that calls the trajectory execution callback at the control rate
         self.execution_timer = rospy.Timer(
             rospy.Duration(1.0 / self.params['control_rate']),
             self.trajectory_execution_cb
         )
-        rospy.loginfo("Starting trajectory execution with CBF-based obstacle avoidance")
+        rospy.loginfo("Starting trajectory execution")
 
     def get_current_state(self):
         if self.joint_states is None:
@@ -708,10 +374,11 @@ class WholeBodyController:
         current_orientation = current_state[2]  # theta
         
         min_dist = float('inf')
-        nearest_idx = 0
+        nearest_idx = self.last_waypoint_idx
         
-        # Check distances to all waypoints, including orientation
-        for i, waypoint in enumerate(self.base_traj['points']):
+        # Search from the last waypoint index to the end of the trajectory
+        for i in range(self.last_waypoint_idx, len(self.base_traj['points'])):
+            waypoint = self.base_traj['points'][i]
             wp_pos = np.array(waypoint[:2])
             wp_orientation = waypoint[2]
             
@@ -741,16 +408,38 @@ class WholeBodyController:
             
         return ref
 
-    def predict_obstacle_trajectories(self):
-        """Generate predicted obstacle trajectories for the CBF constraints"""
-        predicted_obstacles = []
+    def publish_path_as_marker(self, path, publisher, r, g, b, marker_id):
+        """Publish a path as a LINE_STRIP marker."""
+        if not self.params['debug']:
+            return
+
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "path_viz"
+        marker.id = marker_id
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.05  # Line width
+
+        marker.color.r = r
+        marker.color.g = g
+        marker.color.b = b
+        marker.color.a = 1.0
+
+        marker.lifetime = rospy.Duration(0.5)
+
+        # Path is expected to be a list of states (e.g., from X.T)
+        for state in path:
+            p = Point()
+            p.x = state[0]
+            p.y = state[1]
+            p.z = 0.1  # slightly above ground
+            marker.points.append(p)
         
-        for obs_pos in self.obstacle_positions:
-            # For static obstacles, just repeat the current position over the horizon
-            obs_traj = [obs_pos] * (self.mpc.N + 1)
-            predicted_obstacles.append(obs_traj)
-            
-        return predicted_obstacles
+        publisher.publish(marker)
 
     def is_trajectory_complete(self, current_state, end_state):
         """Check if we've reached the end of the trajectory"""
@@ -777,22 +466,19 @@ class WholeBodyController:
         
         # Find nearest waypoint
         nearest_idx = self.find_nearest_waypoint(current_state)
+        self.last_waypoint_idx = nearest_idx
         
         # Generate reference trajectory based on nearest waypoint
         ref = self.construct_reference_from_waypoint(nearest_idx)
         
-        # Generate predicted obstacle trajectories
-        predicted_obstacles = self.predict_obstacle_trajectories()
-        
         if self.params['debug']:
             rospy.logdebug(f"Nearest waypoint index: {nearest_idx} of {len(self.merged_traj)}")
-            rospy.logdebug(f"Number of obstacles: {len(predicted_obstacles)}")
             # Visualize reference path (red)
             self.publish_path_as_marker(ref.T, self.ref_path_pub, 1.0, 0.0, 0.0, 0)
             start_time = rospy.Time.now()
             
-        # Solve MPC with CBF constraints and acceleration constraints
-        X, U = self.mpc.solve(current_state, ref, predicted_obstacles)
+        # Solve MPC
+        X, U = self.mpc.solve(current_state, ref)
         
         if self.params['debug']:
             solve_time = (rospy.Time.now() - start_time).to_sec()

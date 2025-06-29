@@ -246,89 +246,96 @@ def find_valid_base_positions_from_point(
 
     return valid_positions
 
-def generate_ik_seed(pose, costmap, costmap_metadata, lower_limits, upper_limits, manipulation_radius=1.0):
+def _generate_base_seed(
+    pose, costmap, costmap_metadata, manipulation_radius, cost_threshold=0.3
+):
+    """Generates a base seed [x, y, theta] by finding a valid base position."""
+    valid_positions = find_valid_base_positions(
+        pose, costmap, costmap_metadata, manipulation_radius, cost_threshold
+    )
+
+    if not valid_positions:
+        rospy.logwarn("No valid base positions found for seed generation")
+        return None
+
+    # Sort positions by cost (lower is better) and pick the best one
+    sorted_positions = sorted(valid_positions, key=lambda pos: pos[2])
+    best_position = sorted_positions[0]
+
+    # Return x, y, theta
+    return [best_position[0], best_position[1], best_position[3]]
+
+def _generate_arm_seed(lower_limits, upper_limits):
+    """Generates a random arm seed within the provided joint limits."""
+    # Ensure limits are numpy arrays for vectorized operations
+    lower = np.array(lower_limits[3:11])
+    upper = np.array(upper_limits[3:11])
+    return np.random.uniform(lower, upper).tolist()
+
+def generate_ik_seed(
+    pose, costmap, costmap_metadata, lower_limits, upper_limits, manipulation_radius=1.0
+):
     """
-    Generate a deterministic seed for IK using costmap for base position.
-    Selects the best (lowest cost) base position from the costmap if available.
+    Generate a seed configuration for whole-body IK.
+
+    This seed is a starting point for the IK solver, combining a strategically chosen
+    base position with a randomized arm configuration.
 
     Args:
         pose: Target end effector pose (geometry_msgs/Pose)
         costmap: The costmap numpy array.
         costmap_metadata: Dictionary containing costmap metadata.
-        lower_limits: List of lower joint limits (including base).
-        upper_limits: List of upper joint limits (including base).
-        manipulation_radius: Radius for base position sampling.
+        lower_limits: Lower joint limits for the full robot configuration
+        upper_limits: Upper joint limits for the full robot configuration
+        manipulation_radius: Radius for base position sampling
 
     Returns:
-        seed: List representing the generated IK seed (base + arm joints).
+        list: A full 11-DOF seed configuration [x, y, theta, j1, ..., j8] or None
     """
-    rospy.loginfo("Generating deterministic seed for IK...")
+    if costmap is None or costmap_metadata is None:
+        rospy.logwarn("Costmap not available, cannot generate a valid IK seed.")
+        return None
 
-    # Ensure limits are provided and have the expected length (at least 11 for Fetch base+arm)
-    if lower_limits is None or upper_limits is None or len(lower_limits) < 11 or len(upper_limits) < 11:
-         rospy.logerr(f"Invalid or missing joint limits provided for IK seed generation. Got lengths: {len(lower_limits) if lower_limits else 'None'}, {len(upper_limits) if upper_limits else 'None'}")
-         # Fallback to a default seed structure if limits are invalid
-         num_dof = 11 # Assume 11 DoF if limits are missing
-         seed = [0.0] * num_dof
-         rospy.logwarn("Falling back to default zero seed due to missing/invalid limits.")
-         return seed
-
-    # Initialize the seed array with midpoints as fallback
-    seed = [
-        (l + u) / 2.0 for l, u in zip(lower_limits, upper_limits)  # noqa: E741
-    ]
-
-    # Try to use costmap for base position sampling
-    if costmap is not None and costmap_metadata is not None:
-        valid_positions = find_valid_base_positions(
-            pose, costmap, costmap_metadata, manipulation_radius, cost_threshold=0.3
-        )
-
-        if valid_positions and len(valid_positions) > 0:
-            # Sort positions by cost (ascending order - lower cost is better)
-            sorted_positions = sorted(valid_positions, key=lambda pos: pos[2])
-
-            # Take the position with lowest cost
-            best_position = sorted_positions[0]
-            base_x, base_y, _, base_theta = best_position
-
-            # Update the first 3 elements of the seed (base position and orientation)
-            # Clamp base position/orientation to limits if necessary
-            seed[0] = np.clip(base_x, lower_limits[0], upper_limits[0])
-            seed[1] = np.clip(base_y, lower_limits[1], upper_limits[1])
-            seed[2] = np.clip(base_theta, lower_limits[2], upper_limits[2])
-
-
-            rospy.loginfo(
-                f"Using best base position from costmap: [{seed[0]:.4f}, {seed[1]:.4f}, {seed[2]:.4f}]"
-            )
-        else:
-            rospy.logwarn("No valid base positions found in costmap or costmap not used. Using default mid-point base seed.")
-            # Base seed remains the midpoint calculated initially
-            rospy.loginfo(
-                f"Using mid-point base seed: [{seed[0]:.4f}, {seed[1]:.4f}, {seed[2]:.4f}]"
-            )
-
-    else:
-         rospy.logwarn("Costmap not available. Using default mid-point base seed.")
-         rospy.loginfo(
-             f"Using mid-point base seed: [{seed[0]:.4f}, {seed[1]:.4f}, {seed[2]:.4f}]"
-         )
-
-    # Use midpoint values for arm joints (remaining DOFs) - indices 3 through 10 for 8-DOF arm
-    # The initial seed calculation already set these to midpoints.
-    #
-    # To avoid camera view occlusion, we can tune the shoulder joints
-    # shoulder_pan_joint (seed[3]) and shoulder_lift_joint (seed[4])
-    #
-    # Set shoulder_pan_joint to swing the arm to the side
-    seed[3] = 1.3  # rad
-    #
-    # Set shoulder_lift_joint to keep the arm low
-    if len(lower_limits) > 4:
-        seed[4] = lower_limits[4] + 0.2  # rad
-    
-    rospy.loginfo(
-        f"Deterministic seed generated: {[round(val, 3) for val in seed]}"
+    # 1. Generate a base seed
+    base_seed = _generate_base_seed(
+        pose, costmap, costmap_metadata, manipulation_radius
     )
-    return seed 
+    if base_seed is None:
+        rospy.logerr("Failed to generate base seed.")
+        return None
+
+    # 2. Generate an arm seed
+    arm_seed = _generate_arm_seed(lower_limits, upper_limits)
+
+    # 3. Combine them into a full seed
+    full_seed = base_seed + arm_seed
+    rospy.loginfo(f"Generated IK seed: {[f'{x:.3f}' for x in full_seed]}")
+
+    return full_seed
+
+def generate_random_ik_seed(lower_limits, upper_limits):
+    """
+    Generate a random seed for IK by sampling from the entire configuration space.
+
+    Args:
+        lower_limits: Lower joint limits for the full robot configuration
+        upper_limits: Upper joint limits for the full robot configuration
+
+    Returns:
+        list: A full 11-DOF seed configuration [x, y, theta, j1, ..., j8] or None
+    """
+    if lower_limits is None or upper_limits is None:
+        rospy.logwarn("Joint limits not provided, cannot generate a random IK seed.")
+        return None
+
+    # Generate a random configuration within the joint limits
+    random_config = np.random.uniform(lower_limits, upper_limits).tolist()
+
+    # Ensure the configuration is valid (within joint limits)
+    for i in range(len(random_config)):
+        if random_config[i] < lower_limits[i] or random_config[i] > upper_limits[i]:
+            rospy.logwarn(f"Generated configuration out of joint limits for joint {i}")
+            return None
+
+    rospy.loginfo(f"Generated random IK seed: {[f'{x:.3f}' for x in random_config]}")
+    return random_config 

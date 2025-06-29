@@ -253,6 +253,46 @@ class WholeBodyIKSolver:
             rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
             return None
 
+    def _solve_arm_ik_for_base(self, base_config, target_pose, arm_seed):
+        """
+        Solve arm-only IK for a given base configuration and target EE pose.
+
+        Args:
+            base_config (list): [x, y, theta] for the robot base.
+            target_pose (Pose): The target end-effector pose in the world frame.
+            arm_seed (list): A seed configuration for the arm joints.
+
+        Returns:
+            list: The arm joint solution, or None if no solution found.
+        """
+        base_x, base_y, base_theta = base_config
+
+        # Transform the world-frame target pose to the base_link frame
+        T_world_base = transformations.euler_matrix(0, 0, base_theta)
+        T_world_base[0:3, 3] = [base_x, base_y, 0]
+        
+        pos = target_pose.position
+        ori = target_pose.orientation
+        T_world_ee = transformations.quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
+        T_world_ee[0:3, 3] = [pos.x, pos.y, pos.z]
+
+        T_base_world = transformations.inverse_matrix(T_world_base)
+        T_base_ee = np.dot(T_base_world, T_world_ee)
+
+        pos_base_ee = transformations.translation_from_matrix(T_base_ee)
+        quat_base_ee = transformations.quaternion_from_matrix(T_base_ee)
+
+        # Solve IK for the arm
+        start_time = time.time()
+        arm_solution = self.arm_ik_solver.get_ik(
+            arm_seed,
+            pos_base_ee[0], pos_base_ee[1], pos_base_ee[2],
+            quat_base_ee[0], quat_base_ee[1], quat_base_ee[2], quat_base_ee[3]
+        )
+        rospy.loginfo(f"Arm-only IK solving time: {time.time() - start_time:.4f} seconds")
+
+        return arm_solution
+
     def _solve_with_fixed_base(
         self, vamp_module, env, target_pose, max_attempts, manipulation_radius
     ):
@@ -266,8 +306,7 @@ class WholeBodyIKSolver:
             sample_count += 1
             rospy.loginfo(f"IK attempt {sample_count}/{max_attempts} with fixed base")
 
-            # 1. Sample a base pose and arm seed. The full seed is for the floating base solver,
-            # but we use it to get a consistent starting point.
+            # 1. Sample a base pose and arm seed.
             seed = ik_utils.generate_ik_seed(
                 target_pose,
                 self.costmap,
@@ -280,40 +319,19 @@ class WholeBodyIKSolver:
                 rospy.logerr("Failed to generate IK seed. Aborting IK attempt.")
                 continue
 
-            base_x, base_y, base_theta = seed[0], seed[1], seed[2]
+            base_config = seed[:3]
             arm_seed = seed[3:11]  # 8-DOF arm seed
 
-            # 2. Transform the world-frame target pose to the base_link frame
-            T_world_base = transformations.euler_matrix(0, 0, base_theta)
-            T_world_base[0:3, 3] = [base_x, base_y, 0]
-            
-            pos = target_pose.position
-            ori = target_pose.orientation
-            T_world_ee = transformations.quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
-            T_world_ee[0:3, 3] = [pos.x, pos.y, pos.z]
-
-            T_base_world = transformations.inverse_matrix(T_world_base)
-            T_base_ee = np.dot(T_base_world, T_world_ee)
-
-            pos_base_ee = transformations.translation_from_matrix(T_base_ee)
-            quat_base_ee = transformations.quaternion_from_matrix(T_base_ee)
-
-            # 3. Solve IK for the arm
-            start_time = time.time()
-            arm_solution = self.arm_ik_solver.get_ik(
-                arm_seed,
-                pos_base_ee[0], pos_base_ee[1], pos_base_ee[2],
-                quat_base_ee[0], quat_base_ee[1], quat_base_ee[2], quat_base_ee[3]
-            )
-            rospy.loginfo(f"Arm-only IK solving time: {time.time() - start_time:.4f} seconds")
+            # 2. Solve for the arm given the base
+            arm_solution = self._solve_arm_ik_for_base(base_config, target_pose, arm_seed)
 
             if not arm_solution:
                 rospy.logwarn("Arm-only IK failed. Trying new base sample...")
                 continue
 
-            # 4. If solved, construct the full solution and validate
+            # 3. If solved, construct the full solution and validate
             rospy.loginfo("Arm-only IK solution found, performing collision check...")
-            full_solution = list(seed[:3]) + list(arm_solution)
+            full_solution = list(base_config) + list(arm_solution)
             
             vamp_module.set_base_params(full_solution[2], full_solution[0], full_solution[1])
             is_valid = vamp_module.validate(arm_solution, env)
@@ -337,61 +355,3 @@ class WholeBodyIKSolver:
         else:
             rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
             return None
-
-    def solve_arm_ik(
-        self,
-        target_pose,
-        arm_seed=None,
-        max_attempts=10
-    ):
-        """
-        Solves IK for the arm only, from base_link to the end-effector, without collision checking.
-        The target pose is assumed to be in the base_link frame.
-
-        Args:
-            target_pose (geometry_msgs.msg.Pose): The target pose for the end-effector in the base_link frame.
-            arm_seed (list, optional): An initial guess for the arm joint angles (8-DOF).
-                                    If None, a random seed will be generated. Defaults to None.
-            max_attempts (int): Number of attempts with different random seeds if no seed is provided.
-
-        Returns:
-            list: A list of 8 joint values for the arm if a solution is found, otherwise None.
-        """
-        if not self.arm_ik_solver:
-            rospy.logerr("Arm IK solver not initialized, cannot solve.")
-            return None
-
-        rospy.loginfo(
-            "Solving arm-only IK for pose in base_link frame: "
-            + f"position [{target_pose.position.x:.3f}, {target_pose.position.y:.3f}, {target_pose.position.z:.3f}], "
-            + f"orientation [{target_pose.orientation.x:.3f}, {target_pose.orientation.y:.3f}, "
-            + f"{target_pose.orientation.z:.3f}, {target_pose.orientation.w:.3f}]"
-        )
-
-        for attempt in range(max_attempts):
-            current_seed = arm_seed
-            if current_seed is None:
-                # Generate a random seed within joint limits.
-                current_seed = [np.random.uniform(L, U) for L, U in zip(self.arm_lower_limits, self.arm_upper_limits)]
-                rospy.loginfo(f"Generated random seed for attempt {attempt+1}/{max_attempts}")
-
-            if not current_seed:
-                rospy.logerr("Could not generate seed.")
-                return None
-
-            arm_solution = self.arm_ik_solver.get_ik(
-                current_seed,
-                target_pose.position.x, target_pose.position.y, target_pose.position.z,
-                target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w
-            )
-
-            if arm_solution:
-                rospy.loginfo(f"Found arm-only IK solution on attempt {attempt+1}")
-                return list(arm_solution)
-
-            if arm_seed is not None:
-                # if a seed was provided and it failed, don't try again.
-                break
-
-        rospy.logerr(f"Failed to find arm-only IK solution after {max_attempts} attempts.")
-        return None 

@@ -20,6 +20,7 @@ from fetch.utils.ik_solver_utils import WholeBodyIKSolver
 import tf.transformations
 from fetch.utils.control_utils import HeadController
 from std_msgs.msg import Bool
+import fetch.utils.whole_body_ik_utils as ik_utils
 
 
 class Fetch:
@@ -172,71 +173,35 @@ class Fetch:
         return self.ik_solver.get_valid_base_config(
             target_point, manipulation_radius=manipulation_radius
         )
-
-    def solve_ik(self, target_pose, frame_id='map', arm_seed=None, max_attempts=10):
+        
+    def solve_arm_ik_for_base(self, base_config, target_pose, arm_seed):
         """
-        Solve inverse kinematics for the arm, from base_link to the end-effector.
-        The target pose can be provided in any frame, and will be transformed to base_link.
+        Solve arm-only IK for a given base configuration and target EE pose.
+
+        This is a wrapper around the internal IK solver method.
 
         Args:
-            target_pose: Target end effector pose (geometry_msgs/Pose).
-            frame_id: The TF frame of the target_pose. Defaults to 'map'.
-            arm_seed (list, optional): An initial guess for the arm joint angles (8-DOF).
-            max_attempts: Maximum number of sampling attempts.
+            base_config (list): [x, y, theta] for the robot base.
+            target_pose (Pose): The target end-effector pose in the world frame.
+            arm_seed (list): A seed configuration for the arm joints.
 
         Returns:
-            list: A list of 8 joint values for the arm if a solution is found, otherwise None.
+            list: The arm joint solution, or None if no solution found.
         """
-        rospy.loginfo(f"Solving arm-only IK for pose in '{frame_id}' frame.")
+        return self.ik_solver._solve_arm_ik_for_base(base_config, target_pose, arm_seed)
 
-        target_pose_in_base_link = target_pose
+    def generate_arm_seed(self):
+        """
+        Generates a random seed for the arm joints.
 
-        if frame_id != 'base_link':
-            try:
-                # Get the transform from the source frame to the base_link frame
-                transform_stamped = self.tf_buffer.lookup_transform(
-                    'base_link',      # Target frame
-                    frame_id,         # Source frame
-                    rospy.Time(),    # Get the latest transform
-                    rospy.Duration(1.0) # Wait for up to 1 second
-                )
-                
-                # Convert transform to a 4x4 matrix
-                r = transform_stamped.transform.rotation
-                t = transform_stamped.transform.translation
-                T_base_link__frame = transform_utils.quaternion_matrix([r.x, r.y, r.z, r.w])
-                T_base_link__frame[:3, 3] = [t.x, t.y, t.z]
-
-                # Convert target_pose to a 4x4 matrix
-                p = target_pose.position
-                o = target_pose.orientation
-                T_frame__ee = transform_utils.quaternion_matrix([o.x, o.y, o.z, o.w])
-                T_frame__ee[:3, 3] = [p.x, p.y, p.z]
-                
-                # Transform the pose: T_base_link__ee = T_base_link__frame * T_frame__ee
-                T_base_link__ee = np.dot(T_base_link__frame, T_frame__ee)
-
-                # Convert the resulting matrix back to a Pose message
-                pos_final = transform_utils.translation_from_matrix(T_base_link__ee)
-                quat_final = transform_utils.quaternion_from_matrix(T_base_link__ee)
-                
-                target_pose_in_base_link = Pose()
-                target_pose_in_base_link.position.x = pos_final[0]
-                target_pose_in_base_link.position.y = pos_final[1]
-                target_pose_in_base_link.position.z = pos_final[2]
-                target_pose_in_base_link.orientation.x = quat_final[0]
-                target_pose_in_base_link.orientation.y = quat_final[1]
-                target_pose_in_base_link.orientation.z = quat_final[2]
-                target_pose_in_base_link.orientation.w = quat_final[3]
-                
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-                rospy.logerr(f"Failed to transform pose from '{frame_id}' to 'base_link': {e}")
-                return None
-        
-        return self.ik_solver.solve_arm_ik(
-            target_pose=target_pose_in_base_link,
-            arm_seed=arm_seed,
-            max_attempts=max_attempts
+        Returns:
+            list: A random arm configuration, or None if limits are not available.
+        """
+        if self.ik_solver.lower_limits is None or self.ik_solver.upper_limits is None:
+            rospy.logerr("Joint limits not available in IK solver.")
+            return None
+        return ik_utils._generate_arm_seed(
+            self.ik_solver.lower_limits, self.ik_solver.upper_limits
         )
 
     def move_to_pose(self, target_pose, max_attempts=100, manipulation_radius=1.0):
@@ -1216,6 +1181,10 @@ class Fetch:
                 rospy.sleep(0.5)  # Add a small delay between attempts
 
         rospy.loginfo(f"Planning motion to target configuration: {target_joints}")
+
+        # Set VAMP base to current robot base before planning
+        current_base = self.get_base_params()
+        self.set_base_params(current_base[2], current_base[0], current_base[1])
 
         # Plan path using VAMP
         trajectory_points = self._plan_path_with_vamp(current_joints, target_joints)
