@@ -4,7 +4,7 @@ import numpy as np
 import vamp
 import actionlib
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import Twist, PoseStamped, Pose
+from geometry_msgs.msg import Twist, PoseStamped
 from control_msgs.msg import (
     FollowJointTrajectoryAction,
     FollowJointTrajectoryGoal,
@@ -17,7 +17,6 @@ import tf2_ros
 import time
 import fetch.utils.transform_utils as transform_utils
 from fetch.utils.ik_solver_utils import WholeBodyIKSolver
-import tf.transformations
 from fetch.utils.control_utils import HeadController
 from std_msgs.msg import Bool
 import fetch.utils.whole_body_ik_utils as ik_utils
@@ -134,7 +133,7 @@ class Fetch:
         self.ik_solver = WholeBodyIKSolver(urdf_path=urdf_path, costmap_path=costmap_path)
 
     def solve_whole_body_ik(
-        self, target_pose, max_attempts=100, manipulation_radius=1.0
+        self, target_pose, max_attempts=100, manipulation_radius=1.0, normalized_arm_seed=None
     ):
         """
         Solve whole-body inverse kinematics for a given target pose.
@@ -146,6 +145,7 @@ class Fetch:
             target_pose: Target end effector pose (geometry_msgs/Pose)
             max_attempts: Maximum number of sampling attempts
             manipulation_radius: Radius for base position sampling
+            normalized_arm_seed (list, optional): Normalized seed for the arm. Defaults to None.
 
         Returns:
             dict: Solution containing base and arm configuration, or None if no solution found
@@ -157,6 +157,7 @@ class Fetch:
             max_attempts=max_attempts,
             manipulation_radius=manipulation_radius,
             use_fixed_base=True,
+            normalized_arm_seed=normalized_arm_seed,
         )
 
     def get_valid_base_config_for_point(self, target_point, manipulation_radius=1.0):
@@ -190,9 +191,13 @@ class Fetch:
         """
         return self.ik_solver._solve_arm_ik_for_base(base_config, target_pose, arm_seed)
 
-    def generate_arm_seed(self):
+    def generate_arm_seed(self, normalized_values=None):
         """
         Generates a random seed for the arm joints.
+
+        Args:
+            normalized_values (list, optional): A list of normalized values (0-1) for each joint.
+                                               If None, a random seed will be generated.
 
         Returns:
             list: A random arm configuration, or None if limits are not available.
@@ -201,10 +206,10 @@ class Fetch:
             rospy.logerr("Joint limits not available in IK solver.")
             return None
         return ik_utils._generate_arm_seed(
-            self.ik_solver.lower_limits, self.ik_solver.upper_limits
+            self.ik_solver.lower_limits, self.ik_solver.upper_limits, normalized_arm_seed=normalized_values
         )
 
-    def move_to_pose(self, target_pose, max_attempts=100, manipulation_radius=1.0):
+    def move_to_pose(self, target_pose, max_attempts=100, manipulation_radius=1.0, normalized_arm_seed=None):
         """
         Move the robot to place its end effector at the target pose.
 
@@ -216,6 +221,7 @@ class Fetch:
         Args:
             target_pose: Target end effector pose (geometry_msgs/Pose)
             execution_time: Time for trajectory execution in seconds
+            normalized_arm_seed (list, optional): Normalized seed for the arm. Defaults to None.
 
         Returns:
             bool: True if successful, False otherwise
@@ -231,7 +237,7 @@ class Fetch:
 
         # Step 1: Solve whole-body IK
         rospy.loginfo("Step 1: Solving whole-body IK...")
-        ik_solution = self.solve_whole_body_ik(target_pose, max_attempts=max_attempts, manipulation_radius=manipulation_radius)
+        ik_solution = self.solve_whole_body_ik(target_pose, max_attempts=max_attempts, manipulation_radius=manipulation_radius, normalized_arm_seed=normalized_arm_seed)
 
         if ik_solution is None:
             rospy.logerr("Failed to find IK solution")

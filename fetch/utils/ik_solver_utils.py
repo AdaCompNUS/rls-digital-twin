@@ -125,6 +125,7 @@ class WholeBodyIKSolver:
         max_attempts=100,
         manipulation_radius=1.0,
         use_fixed_base=False,
+        normalized_arm_seed=None,
     ):
         """
         Solve whole-body inverse kinematics for a given target pose.
@@ -139,6 +140,7 @@ class WholeBodyIKSolver:
             max_attempts: Maximum number of sampling attempts.
             manipulation_radius: Radius for base position sampling.
             use_fixed_base: If True, uses the fixed-base IK strategy.
+            normalized_arm_seed (list, optional): Normalized seed for the arm. Defaults to None.
 
         Returns:
             dict: Solution containing base and arm configuration, or None if no solution found.
@@ -150,16 +152,16 @@ class WholeBodyIKSolver:
         if use_fixed_base:
             rospy.loginfo("Solving whole-body IK with a fixed base strategy.")
             return self._solve_with_fixed_base(
-                vamp_module, env, target_pose, max_attempts, manipulation_radius
+                vamp_module, env, target_pose, max_attempts, manipulation_radius, normalized_arm_seed
             )
         else:
             rospy.loginfo("Solving whole-body IK with a floating base strategy.")
             return self._solve_with_floating_base(
-                vamp_module, env, target_pose, max_attempts, manipulation_radius
+                vamp_module, env, target_pose, max_attempts, manipulation_radius, normalized_arm_seed
             )
 
     def _solve_with_floating_base(
-        self, vamp_module, env, target_pose, max_attempts, manipulation_radius
+        self, vamp_module, env, target_pose, max_attempts, manipulation_radius, normalized_arm_seed=None
     ):
         """IK solving with a floating base (original method)."""
         pose = Pose()
@@ -194,6 +196,7 @@ class WholeBodyIKSolver:
                 self.lower_limits,
                 self.upper_limits,
                 manipulation_radius=manipulation_radius,
+                normalized_arm_seed=normalized_arm_seed,
             )
             if seed is None:
                 rospy.logerr("Failed to generate IK seed. Aborting IK attempt.")
@@ -294,7 +297,7 @@ class WholeBodyIKSolver:
         return arm_solution
 
     def _solve_with_fixed_base(
-        self, vamp_module, env, target_pose, max_attempts, manipulation_radius
+        self, vamp_module, env, target_pose, max_attempts, manipulation_radius, normalized_arm_seed=None
     ):
         """IK solving with a fixed base, solving only for the arm."""
         solution = None
@@ -314,6 +317,7 @@ class WholeBodyIKSolver:
                 self.lower_limits,  # Use full limits for seeding
                 self.upper_limits,
                 manipulation_radius=manipulation_radius,
+                normalized_arm_seed=normalized_arm_seed,
             )
             if seed is None:
                 rospy.logerr("Failed to generate IK seed. Aborting IK attempt.")

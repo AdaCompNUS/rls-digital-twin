@@ -265,15 +265,21 @@ def _generate_base_seed(
     # Return x, y, theta
     return [best_position[0], best_position[1], best_position[3]]
 
-def _generate_arm_seed(lower_limits, upper_limits):
-    """Generates a random arm seed within the provided joint limits."""
-    # Ensure limits are numpy arrays for vectorized operations
+def _generate_arm_seed(lower_limits, upper_limits, normalized_arm_seed=None):
+    """
+    Generates a random arm seed within the provided joint limits.
+    If normalized_arm_seed is provided, it will be used to generate the seed.
+    """
     lower = np.array(lower_limits[3:11])
     upper = np.array(upper_limits[3:11])
-    return np.random.uniform(lower, upper).tolist()
+    
+    if normalized_arm_seed is not None:
+        return (lower + np.array(normalized_arm_seed) * (upper - lower)).tolist()
+    else:
+        return np.random.uniform(lower, upper).tolist()
 
 def generate_ik_seed(
-    pose, costmap, costmap_metadata, lower_limits, upper_limits, manipulation_radius=1.0
+    pose, costmap, costmap_metadata, lower_limits, upper_limits, manipulation_radius=1.0, normalized_arm_seed=None
 ):
     """
     Generate a seed configuration for whole-body IK.
@@ -288,6 +294,7 @@ def generate_ik_seed(
         lower_limits: Lower joint limits for the full robot configuration
         upper_limits: Upper joint limits for the full robot configuration
         manipulation_radius: Radius for base position sampling
+        normalized_arm_seed: Optional normalized arm seed for specific arm configuration
 
     Returns:
         list: A full 11-DOF seed configuration [x, y, theta, j1, ..., j8] or None
@@ -305,7 +312,7 @@ def generate_ik_seed(
         return None
 
     # 2. Generate an arm seed
-    arm_seed = _generate_arm_seed(lower_limits, upper_limits)
+    arm_seed = _generate_arm_seed(lower_limits, upper_limits, normalized_arm_seed=normalized_arm_seed)
 
     # 3. Combine them into a full seed
     full_seed = base_seed + arm_seed
