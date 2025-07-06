@@ -238,6 +238,7 @@ class WholeBodyController:
         # Subscribe to trajectory topics
         rospy.Subscriber('/fetch_whole_body_controller/arm_path', JointTrajectory, self.arm_cb)
         rospy.Subscriber('/fetch_whole_body_controller/base_path', JointTrajectory, self.base_cb)
+        rospy.Subscriber('/fetch_whole_body_controller/stop', Bool, self.stop_cb)
         
         rospy.loginfo("Waiting for the 'map' to 'base_link' transform...")
         try:
@@ -309,12 +310,22 @@ class WholeBodyController:
         }
         self.check_trajectories()
 
+    def stop_cb(self, msg):
+        if msg.data and self.executing:
+            rospy.loginfo("Received stop command, stopping trajectory execution.")
+            self.stop_execution(success=False)
+
     def check_trajectories(self):
         if not self.arm_traj or not self.base_traj:
             return
             
         if len(self.arm_traj['points']) != len(self.base_traj['points']):
             rospy.logerr("Trajectory mismatch: different number of points!")
+            return
+        
+        # Do not start if trajectories are empty
+        if not self.arm_traj['points']:
+            rospy.logwarn("Received empty trajectories, not starting execution.")
             return
         
         # Create merged trajectory
@@ -459,6 +470,11 @@ class WholeBodyController:
                 
     def trajectory_execution_cb(self, event):
         """Execute the trajectory with CBF-based obstacle avoidance"""
+        if not self.merged_traj:
+            rospy.logwarn_once("Trajectory execution callback called without a valid trajectory. Stopping.")
+            self.stop_execution(success=False)
+            return
+            
         # Get current state
         current_state = self.get_current_state()
         if current_state is None:
@@ -489,7 +505,7 @@ class WholeBodyController:
         
         if U is None:
             rospy.logerr("MPC solve failed. Stopping execution.")
-            self.stop_execution()
+            self.stop_execution(success=False)
             return
             
         # Publish commands
@@ -500,11 +516,14 @@ class WholeBodyController:
             # Near the final waypoint, check if we're close enough
             if self.is_trajectory_complete(current_state, self.merged_traj[-1]):
                 rospy.loginfo("Trajectory completed successfully")
-                self.stop_execution()
+                self.stop_execution(success=True)
                 return
     
-    def stop_execution(self):
+    def stop_execution(self, success=True):
         """Stop trajectory execution and cleanup timer"""
+        if not self.executing:
+            return
+
         self.stop()
         self.executing = False
         
@@ -514,8 +533,11 @@ class WholeBodyController:
             self.execution_timer = None
 
         # Publish completion signal
-        self.execution_finished_pub.publish(Bool(data=True))
-        rospy.loginfo("Published trajectory completion signal.")
+        self.execution_finished_pub.publish(Bool(data=success))
+        if success:
+            rospy.loginfo("Published trajectory completion signal (success).")
+        else:
+            rospy.loginfo("Published trajectory completion signal (aborted).")
 
     def publish_commands(self, u):
         """Publish velocity commands to the robot"""

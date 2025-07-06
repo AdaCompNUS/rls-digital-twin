@@ -3,7 +3,8 @@ import rospy
 import numpy as np
 import vamp
 import actionlib
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, PointCloud2, PointField
+from sensor_msgs import point_cloud2
 from geometry_msgs.msg import Twist, PoseStamped
 from control_msgs.msg import (
     FollowJointTrajectoryAction,
@@ -18,8 +19,9 @@ import time
 import fetch.utils.transform_utils as transform_utils
 from fetch.utils.ik_solver_utils import WholeBodyIKSolver
 from fetch.utils.control_utils import HeadController
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Header
 import fetch.utils.whole_body_ik_utils as ik_utils
+import fetch.utils.replanning_utils as replanning_utils
 
 
 class Fetch:
@@ -131,6 +133,11 @@ class Fetch:
 
         # Initialize the whole-body IK solver
         self.ik_solver = WholeBodyIKSolver(urdf_path=urdf_path, costmap_path=costmap_path)
+
+        # Publisher for debugging point clouds
+        self.pointcloud_publisher = rospy.Publisher(
+            "/debug_pointcloud", PointCloud2, queue_size=1
+        )
 
     def solve_whole_body_ik(
         self, target_pose, max_attempts=100, manipulation_radius=1.0, normalized_arm_seed=None
@@ -948,8 +955,62 @@ class Fetch:
         )
         if name:
             cylinder.name = name
-        self.env.add_capsule(cylinder)
+        self.env.add_cylinder(cylinder)
         rospy.loginfo(f"Added cylinder constraint at {position}")
+
+    def filter_points_on_robot(self, points, point_radius=0.03):
+        """
+        Filters a point cloud to remove points that are inside or too close to the robot's body.
+
+        This method uses the robot's current configuration (base and joints) to check for
+        collisions between the provided points and the robot model.
+
+        Args:
+            points (list or np.ndarray): The input point cloud, as a list of [x, y, z] points
+                                         or a NumPy array of shape (N, 3).
+            point_radius (float): The radius around each point to consider for collision.
+                                  Points within this distance of the robot will be removed.
+
+        Returns:
+            (list, float): A tuple containing:
+                - A new list of points with the robot's points filtered out.
+                - The time taken for filtering in seconds.
+              Returns the original list and 0 time if the robot's state cannot be determined.
+        """
+        from time import time
+        import numpy as np
+
+        robot_filter_start_time = time()
+
+        # Get current robot configuration
+        current_joints = self.get_current_planning_joints()
+        if current_joints is None:
+            rospy.logwarn(
+                "Could not get current joint positions for robot filtering, returning original points."
+            )
+            return points, 0
+
+        # Get current base configuration and set it in VAMP
+        current_base = self.get_base_params()
+        self.set_base_params(current_base[2], current_base[0], current_base[1])
+
+        # Ensure points are in list format for VAMP
+        if isinstance(points, np.ndarray):
+            points_list = points.tolist()
+        else:
+            points_list = points
+
+        # Call VAMP's robot filtering function
+        filtered_points = self.vamp_module.filter_fetch_from_pointcloud(
+            points_list, current_joints, current_base, self.env, point_radius
+        )
+
+        robot_filter_time = time() - robot_filter_start_time
+        rospy.loginfo(
+            f"Robot filtering completed in {robot_filter_time:.3f}s. Filtered {len(points) - len(filtered_points)} points."
+        )
+
+        return filtered_points, robot_filter_time
 
     def add_pointcloud(
         self,
@@ -957,6 +1018,8 @@ class Fetch:
         filter_radius=0.02,
         filter_cull=False,
         enable_filtering=False,
+        filter_robot=True,
+        point_radius=0.03,
     ):
         """
         Add a pointcloud as collision constraint from already loaded point data.
@@ -966,6 +1029,8 @@ class Fetch:
             filter_radius: Filter radius for pointcloud filtering (used only if enable_filtering=True)
             filter_cull: Whether to cull pointcloud around robot (used only if enable_filtering=True)
             enable_filtering: Whether to enable point cloud filtering (default: False)
+            filter_robot: Whether to filter out points that collide with the robot's current configuration (default: True)
+            point_radius: Radius for each point when checking robot collisions (default: 0.03)
 
         Returns:
             float: Time taken to process and add the point cloud or -1 if error
@@ -1010,17 +1075,6 @@ class Fetch:
 
             filter_time = filter_time_us / 1e6  # Convert to seconds
 
-            # Check if filtering was successful
-            if len(filtered_pc) == 0:
-                rospy.logwarn(
-                    "Filtering resulted in zero points, using simple sphere obstacle instead"
-                )
-                # Add a simple sphere as a fallback
-                sphere = vamp.Sphere([0.5, 0.0, 0.5], 0.2)
-                sphere.name = "fallback_obstacle"
-                self.env.add_sphere(sphere)
-                processing_time = time() - start_time
-                return processing_time
 
             points_to_use = filtered_pc
             rospy.loginfo(f"Using {len(points_to_use)} filtered points")
@@ -1030,9 +1084,42 @@ class Fetch:
             filter_time = 0
             rospy.loginfo(f"Using all {len(points_to_use)} points (no filtering)")
 
+        # Filter out points that collide with the robot's current configuration
+        if filter_robot and len(points_to_use) > 0:
+            rospy.loginfo("Filtering out points that collide with robot configuration...")
+            points_to_use, robot_filter_time = self.filter_points_on_robot(points_to_use, point_radius=point_radius)
+            rospy.loginfo(f"Points after robot filtering: {len(points_to_use)}")
+        else:
+            robot_filter_time = 0
+            if not filter_robot:
+                rospy.loginfo("Robot filtering disabled")
+
+        # Visualize points_to_use for debugging in RViz
+        if len(points_to_use) > 0:
+            try:
+                header = Header()
+                header.stamp = rospy.Time.now()
+                header.frame_id = "map"
+                fields = [
+                    PointField("x", 0, PointField.FLOAT32, 1),
+                    PointField("y", 4, PointField.FLOAT32, 1),
+                    PointField("z", 8, PointField.FLOAT32, 1),
+                ]
+                # Ensure points_to_use is a list of lists for create_cloud
+                if isinstance(points_to_use, np.ndarray):
+                    points_for_pcl = points_to_use.tolist()
+                else:
+                    points_for_pcl = points_to_use
+                pc2_msg = point_cloud2.create_cloud(header, fields, points_for_pcl)
+                self.pointcloud_publisher.publish(pc2_msg)
+                rospy.loginfo(
+                    f"Published {len(points_to_use)} points to /debug_pointcloud for visualization."
+                )
+            except Exception as e:
+                rospy.logwarn(f"Failed to publish debug pointcloud: {e}")
+
         # Define robot-specific radius parameters
-        r_min, r_max = 0.03, 0.08  # Min/max sphere radius for Fetch robot
-        point_radius = 0.03  # Default point radius for collision checking
+        r_min, r_max = vamp.ROBOT_RADII_RANGES["fetch"]  # Min/max sphere radius for Fetch robot
 
         # Add the filtered point cloud to the environment
         # Ensure points are in list format for vamp
@@ -1053,6 +1140,7 @@ class Fetch:
                 Original size: {len(points)}
                 Filtered size: {len(points_to_use)}
                 Filter time: {filter_time:.3f}s
+                Robot filter time: {robot_filter_time:.3f}s
                 Build time: {build_time * 1e-6:.3f}s
                 Add time: {add_time:.3f}s
                 Total processing time: {processing_time:.3f}s"""
@@ -1061,6 +1149,7 @@ class Fetch:
             rospy.loginfo(
                 f"""Pointcloud processing stats (NO FILTERING):
                 Points processed: {len(points)}
+                Robot filter time: {robot_filter_time:.3f}s
                 Build time: {build_time * 1e-6:.3f}s
                 Add time: {add_time:.3f}s
                 Total processing time: {processing_time:.3f}s
@@ -1382,3 +1471,31 @@ class Fetch:
             duration (float): The duration of the head movement in seconds.
         """
         self.head_controller.point_head_at(target_point, frame_id, duration)
+
+    def clear_pointclouds(self):
+        """
+        Clears all point cloud collision objects from the VAMP environment.
+        This is useful for updating the environment with new sensor data.
+        """
+        rospy.loginfo("Clearing all point clouds from the environment.")
+        self.env.clear_pointclouds()
+
+    def check_plan_for_collisions(
+        self, arm_path, base_configs, current_waypoint_index
+    ):
+        """
+        Checks the remainder of a whole-body plan for collisions against the current
+        state of the collision environment.
+
+        Args:
+            arm_path (list): The list of joint configurations for the arm.
+            base_configs (list): The list of configurations for the base.
+            current_waypoint_index (int): The index of the last waypoint the robot
+                                          has successfully reached.
+
+        Returns:
+            bool: True if a collision is detected, False otherwise.
+        """
+        return replanning_utils.check_trajectory_for_collisions(
+            self.vamp_module, self.env, arm_path, base_configs, current_waypoint_index
+        )
