@@ -440,6 +440,22 @@ class Fetch:
                 return None
 
         return positions
+
+    def get_arm_joint_values(self):
+        """Get current joint positions for the 7-DOF arm."""
+        planning_joints = self.get_current_planning_joints()
+        if planning_joints is None:
+            return None
+        # The first joint is torso, the rest are arm joints
+        return planning_joints[1:]
+
+    def get_torso_position(self):
+        """Get current torso position."""
+        planning_joints = self.get_current_planning_joints()
+        if planning_joints is None:
+            return None
+        # The first joint is torso
+        return planning_joints[0]
     
     def get_camera_pose(self, camera_frame='head_camera_rgb_optical_frame', world_frame='map'):
         """
@@ -1499,3 +1515,6 @@ class Fetch:
         return replanning_utils.check_trajectory_for_collisions(
             self.vamp_module, self.env, arm_path, base_configs, current_waypoint_index
         )
+
+    def solve_arm_ik(self, base_config, torso_pos, target_pose, arm_seed_joints):
+        return self.ik_solver.solve_arm_ik(base_config, torso_pos, target_pose, arm_seed_joints)

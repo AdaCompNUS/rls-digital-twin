@@ -29,11 +29,14 @@ class WholeBodyIKSolver:
         
         self.full_ik_solver = None
         self.arm_ik_solver = None
+        self.arm_only_ik_solver = None
         
         self.lower_limits = None
         self.upper_limits = None
         self.arm_lower_limits = None
         self.arm_upper_limits = None
+        self.arm_only_lower_limits = None
+        self.arm_only_upper_limits = None
         
         self.costmap = None
         self.costmap_metadata = None
@@ -68,7 +71,18 @@ class WholeBodyIKSolver:
                 epsilon=1e-6,
             )
             self.arm_lower_limits, self.arm_upper_limits = self.arm_ik_solver.get_joint_limits()
-            rospy.loginfo(f"Initialized arm-only IK solver ('{self.ARM_BASE_LINK}' to '{self.EE_LINK}') with {len(self.arm_lower_limits)} joints.")
+            rospy.loginfo(f"Initialized arm-with-torso IK solver ('{self.ARM_BASE_LINK}' to '{self.EE_LINK}') with {len(self.arm_lower_limits)} joints.")
+
+            # 7-DOF Arm only solver (fixed base from torso_lift_link)
+            self.arm_only_ik_solver = IK(
+                "torso_lift_link",
+                self.EE_LINK,
+                urdf_string=self.urdf_str,
+                timeout=0.5,
+                epsilon=1e-6,
+            )
+            self.arm_only_lower_limits, self.arm_only_upper_limits = self.arm_only_ik_solver.get_joint_limits()
+            rospy.loginfo(f"Initialized 7-DOF arm-only IK solver ('torso_lift_link' to '{self.EE_LINK}') with {len(self.arm_only_lower_limits)} joints.")
 
         except Exception as e:
             rospy.logerr(f"Failed to initialize IK solvers: {str(e)}")
@@ -294,7 +308,9 @@ class WholeBodyIKSolver:
         )
         rospy.loginfo(f"Arm-only IK solving time: {time.time() - start_time:.4f} seconds")
 
-        return arm_solution
+        if arm_solution:
+            return list(arm_solution)
+        return None
 
     def _solve_with_fixed_base(
         self, vamp_module, env, target_pose, max_attempts, manipulation_radius, normalized_arm_seed=None
@@ -359,3 +375,70 @@ class WholeBodyIKSolver:
         else:
             rospy.logerr(f"Failed to find valid solution after {max_attempts} attempts")
             return None
+
+    def solve_arm_ik(self, base_config, torso_pos, target_pose, arm_seed_joints):
+        """
+        Solves arm-only IK for a given base, torso, and target EE pose.
+        This method is for a fixed base and torso, solving only for the 7-DOF arm.
+
+        Args:
+            base_config (list): [x, y, theta] for the robot base.
+            torso_pos (float): The torso_lift_joint position.
+            target_pose (Pose): The target end-effector pose in the world frame.
+            arm_seed_joints (list): A seed configuration for the 7-DOF arm joints.
+
+        Returns:
+            list: The 7-DOF arm joint solution, or None if no solution found.
+        """
+        if not self.arm_only_ik_solver:
+            rospy.logerr("Arm only IK solver not initialized, cannot solve.")
+            return None
+
+        if arm_seed_joints is None or self.arm_only_lower_limits is None:
+            rospy.logerr("Arm seed or IK limits are None, cannot solve.")
+            return None
+
+        if len(arm_seed_joints) != len(self.arm_only_lower_limits):
+            rospy.logerr(f"Arm seed joints count mismatch. Expected {len(self.arm_only_lower_limits)}, got {len(arm_seed_joints)}.")
+            return None
+
+        base_x, base_y, base_theta = base_config
+
+        # Transformation from world to base_link
+        T_world_base = transformations.euler_matrix(0, 0, base_theta)
+        T_world_base[0:3, 3] = [base_x, base_y, 0]
+
+        # Transformation from base_link to torso_lift_link
+        # From URDF for torso_lift_joint: origin xyz="-0.086875 0 0.37743" and it's a prismatic joint on z-axis.
+        torso_lift_link_offset = [-0.086875, 0, 0.37743]
+        T_base_torso = transformations.translation_matrix(torso_lift_link_offset)
+        T_base_torso[2, 3] += torso_pos
+
+        T_world_torso = np.dot(T_world_base, T_base_torso)
+
+        # Get target pose in world
+        pos = target_pose.position
+        ori = target_pose.orientation
+        T_world_ee = transformations.quaternion_matrix([ori.x, ori.y, ori.z, ori.w])
+        T_world_ee[0:3, 3] = [pos.x, pos.y, pos.z]
+
+        # Transform target pose to torso_lift_link frame
+        T_torso_world = transformations.inverse_matrix(T_world_torso)
+        T_torso_ee = np.dot(T_torso_world, T_world_ee)
+        
+        pos_torso_ee = transformations.translation_from_matrix(T_torso_ee)
+        quat_torso_ee = transformations.quaternion_from_matrix(T_torso_ee)
+
+        # Solve IK for the arm
+        rospy.loginfo("Solving arm-only IK for pose in torso_lift_link frame...")
+        start_time = time.time()
+        arm_solution = self.arm_only_ik_solver.get_ik(
+            arm_seed_joints,
+            pos_torso_ee[0], pos_torso_ee[1], pos_torso_ee[2],
+            quat_torso_ee[0], quat_torso_ee[1], quat_torso_ee[2], quat_torso_ee[3]
+        )
+        rospy.loginfo(f"Arm-only IK solving time: {time.time() - start_time:.4f} seconds")
+
+        if arm_solution:
+            return list(arm_solution)
+        return None
