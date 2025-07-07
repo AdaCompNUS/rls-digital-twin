@@ -73,4 +73,63 @@ def transform_pose_to_base(world_pos, world_quat, base_pos, base_yaw):
     ee_rot = base_rot_inv * world_rot
     ee_quat = ee_rot.as_quat()
 
-    return ee_pos.tolist(), ee_quat.tolist() 
+    return ee_pos.tolist(), ee_quat.tolist()
+
+def quaternion_matrix(quaternion):
+    """
+    Converts a quaternion [x, y, z, w] to a 4x4 transformation matrix.
+    """
+    x, y, z, w = quaternion
+    n = w * w + x * x + y * y + z * z
+    s = 2.0 / n if n > 0 else 0
+    
+    wx, wy, wz = w * s, w * s, w * s
+    xx, xy, xz = x * s, x * s, x * s
+    yy, yz, zz = y * s, y * s, z * s
+    
+    matrix = np.array([
+        [1.0 - (yy + zz), xy - wz, xz + wy, 0.0],
+        [xy + wz, 1.0 - (xx + zz), yz - wx, 0.0],
+        [xz - wy, yz + wx, 1.0 - (xx + yy), 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+    ])
+    return matrix
+
+def translation_from_matrix(matrix):
+    """
+    Returns the translation part of a 4x4 transformation matrix.
+    """
+    return matrix[:3, 3].tolist()
+
+def quaternion_from_matrix(matrix):
+    """
+    Converts the rotation part of a 4x4 matrix to a quaternion [x, y, z, w].
+    """
+    M = matrix[:3, :3]
+    t = np.trace(M)
+    if t > 0:
+        s = 0.5 / np.sqrt(t + 1.0)
+        w = 0.25 / s
+        x = (M[2, 1] - M[1, 2]) * s
+        y = (M[0, 2] - M[2, 0]) * s
+        z = (M[1, 0] - M[0, 1]) * s
+    elif M[0, 0] > M[1, 1] and M[0, 0] > M[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + M[0, 0] - M[1, 1] - M[2, 2])
+        w = (M[2, 1] - M[1, 2]) / s
+        x = 0.25 * s
+        y = (M[0, 1] + M[1, 0]) / s
+        z = (M[0, 2] + M[2, 0]) / s
+    elif M[1, 1] > M[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + M[1, 1] - M[0, 0] - M[2, 2])
+        w = (M[0, 2] - M[2, 0]) / s
+        x = (M[0, 1] + M[1, 0]) / s
+        y = 0.25 * s
+        z = (M[1, 2] + M[2, 1]) / s
+    else:
+        s = 2.0 * np.sqrt(1.0 + M[2, 2] - M[0, 0] - M[1, 1])
+        w = (M[1, 0] - M[0, 1]) / s
+        x = (M[0, 2] + M[2, 0]) / s
+        y = (M[1, 2] + M[2, 1]) / s
+        z = 0.25 * s
+        
+    return [x, y, z, w] 

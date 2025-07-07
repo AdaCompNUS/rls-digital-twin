@@ -1,30 +1,42 @@
 <?xml version="1.0"?>
 <launch>
-    <!-- Set environment variables -->
-    <env name="GAZEBO_MODEL_PATH" value="$(find low_level_planning)/models"/>
+<!-- Set environment variables -->
+<env name="GAZEBO_MODEL_PATH" value="$(find low_level_planning)/models"/>
 
-    <!-- Launch Gazebo with empty world -->
-    <include file="$(find gazebo_ros)/launch/empty_world.launch">
-        <arg name="verbose" value="true"/>
-    </include>
+<!-- Launch Gazebo with empty world -->
+<include file="$(find gazebo_ros)/launch/empty_world.launch">
+<arg name="verbose" value="true"/>
+</include>
 
-    <!-- Spawn the environment model -->
-    <node name="spawn_environment" pkg="gazebo_ros" type="spawn_model"
-          output="screen" respawn="false"
-          args="-file $(find low_level_planning)/models/environment.sdf -sdf -model environment"/>
+<!-- Set physics parameters for high friction -->
+<rosparam param="/gazebo/ode">
+  solver:
+    type: quick
+    iters: 50
+  constraints:
+    cfm: 0.0
+    erp: 0.2
+    contact_max_correcting_vel: 100.0
+    contact_surface_layer: 0.0
+</rosparam>
 
-    <!-- Launch the Fetch robot -->
-    <include file="$(find fetch_gazebo)/launch/include/fetch.launch.xml"/>
+<!-- Spawn the environment model -->
+<node name="spawn_environment" pkg="gazebo_ros" type="spawn_model"
+output="screen" respawn="false"
+args="-file $(find low_level_planning)/models/environment.sdf -sdf -model environment"/>
+
+<!-- Launch the Fetch robot -->
+<include file="$(find fetch_gazebo)/launch/include/fetch.launch.xml"/>
 
     <!-- Launch MoveIt -->
     <!-- <include file="$(find fetch_moveit_config)/launch/move_group.launch"/> -->
 
-    <!-- Launch navigation -->
-    <include file="$(find fetch_navigation)/launch/fetch_nav.launch">
-        <arg name="map_file" value="$(find low_level_planning)/maps/digital_twin_map.yaml"/>
-        <arg name="move_base_include" value="$(find low_level_planning)/launch/include/move_base.launch.xml"/>
-        <arg name="amcl_include" value="$(find low_level_planning)/launch/include/amcl.launch.xml"/>
-    </include>
+<!-- Launch navigation -->
+<include file="$(find fetch_navigation)/launch/fetch_nav.launch">
+<arg name="map_file" value="$(find low_level_planning)/maps/digital_twin_map.yaml"/>
+<arg name="move_base_include" value="$(find low_level_planning)/launch/include/move_base.launch.xml"/>
+<arg name="amcl_include" value="$(find low_level_planning)/launch/include/amcl.launch.xml"/>
+</include>
 
-    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find low_level_planning)/rviz/robot_rls_demo.rviz" output="screen"/>
+<node name="rviz" pkg="rviz" type="rviz" args="-d $(find low_level_planning)/rviz/robot_rls_demo.rviz" output="screen"/>
 </launch>

@@ -1,0 +1,51 @@
+# =================================================================
+# == Parameters for the Chained Form Trajectory Tracking Controller ==
+# =================================================================
+
+# Control Loop and Trajectory Generation Parameters
+# -------------------------------------------------
+control_rate: 30.0 # Rate in Hz at which the control loop runs. 10-20Hz is typical.
+
+# Robot Physical Limits (used by the trajectory time-parameterization)
+max_linear_vel: 0.5      # Maximum linear velocity (m/s). Keep this realistic.
+max_angular_vel: 0.8     # Maximum angular velocity (rad/s).
+max_linear_acc: 0.5      # Maximum linear acceleration (m/s^2).
+max_angular_acc: 1.0     # Maximum angular acceleration (rad/s^2).
+
+# Joint configuration (must match the order in the controller script)
+max_joint_velocities: [0.2, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]  # [torso, arm_joints...]
+max_joint_accelerations: [0.15, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5] # [torso, arm_joints...]
+
+
+# Chained Form Controller Gains (Section 49.4.2)
+# -----------------------------------------------
+# These three positive gains determine the controller's behavior.
+# They are the k1, k2, k3 values from Eq. 49.20 in the paper.
+
+# k1: Along-track error correction gain.
+#     Affects how aggressively the robot tries to catch up to or
+#     slow down for the reference point along the path.
+k1: 10.0
+
+# k2: Cross-track error correction gain.
+#     This is a critical gain. It determines how strongly the robot steers
+#     back towards the path when it has a perpendicular error (y_e).
+#     Higher values lead to faster correction but can cause overshoot.
+k2: 5.0
+
+# k3: Orientation error correction gain.
+#     Determines how strongly the robot corrects its heading (theta_e).
+#     Too low -> sluggish orientation tracking.
+#     Too high -> orientation oscillations.
+k3: 2.0
+
+
+# Goal Convergence Tolerances
+# ---------------------------
+# Defines when the robot is considered "done" and stops execution.
+
+# Maximum allowed distance from the final goal position.
+position_tolerance: 0.02  # 2 cm
+
+# Maximum allowed orientation difference from the final goal orientation.
+angle_tolerance: 0.03   # ~4 degrees in radians

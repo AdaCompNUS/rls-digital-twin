@@ -8,7 +8,7 @@ from geometry_msgs.msg import Pose
 from fetch.fetch import Fetch
 
 # Select which test case to run (0-4)
-TEST_CASE_INDEX = 0  # Change this value to select a specific test case
+TEST_CASE_INDEX = 2  # Change this value to select a specific test case
 
 # Configuration for testing
 USE_POINTCLOUD = True  # Set to False to skip pointcloud loading
@@ -358,7 +358,7 @@ def run_ik_test(robot, test_case_idx, pose_array):
 
     # Execute the planned motion
     execution_result = robot.execute_whole_body_motion(
-        plan_result["arm_path"], plan_result["base_configs"], TRAJECTORY_DURATION
+        plan_result["arm_path"], plan_result["base_configs"]
     )
 
     execution_time = time.time() - execution_start_time

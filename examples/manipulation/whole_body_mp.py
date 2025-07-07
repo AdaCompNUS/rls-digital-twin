@@ -385,7 +385,7 @@ def main():
 
     # Execute the planned motion
     robot.execute_whole_body_motion(
-        plan_result["arm_path"], plan_result["base_configs"], TRAJECTORY_DURATION
+        plan_result["arm_path"], plan_result["base_configs"]
     )
 
     # STEP 5: Verify final pose
