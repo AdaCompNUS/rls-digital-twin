@@ -675,11 +675,12 @@ class Fetch:
 
             # Interpolate both arm and base paths together
             rospy.loginfo("Interpolating whole-body path...")
-            interpolation_resolution = 64
+            # interpolation_resolution = 64
+            density = 0.02
             # interpolation_resolution = self.vamp_module.resolution()
-            whole_body_result.interpolate(interpolation_resolution)
+            whole_body_result.interpolate(density)
             rospy.loginfo(
-                f"Interpolated with resolution {interpolation_resolution}"
+                f"Interpolated with density {density}"
             )
 
             # Get the interpolated paths

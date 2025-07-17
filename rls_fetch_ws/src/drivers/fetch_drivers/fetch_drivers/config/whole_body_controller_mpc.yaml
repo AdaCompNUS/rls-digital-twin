@@ -1,12 +1,12 @@
 # MPC Controller Parameters
 # Control parameters
 control_rate: 20
-prediction_horizon: 15
+prediction_horizon: 30
 trajectory_end_threshold: 0.1 # The tolerance for reaching the final goal state
 
 # Velocity limits
 max_linear_vel: 0.5
-max_angular_vel: 1.0
+max_angular_vel: 1.5
 
 # Joint configuration
 joint_names:
@@ -22,13 +22,14 @@ joint_names:
 max_joint_velocities: [0.2, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
 
 # MPC cost weights - State weights (x, y, theta, torso_joint, 7 arm_joints)
-Q_state: [30.0, 30.0, 30.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+# Q_state: [30.0, 30.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+Q_state: [3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1]
 
 # Control weights (base_linear, base_angular, torso_joint, 7 arm_joints)
-R_control: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+R_control: [3.0, 1.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
 
 # Slack weights
-slack_dynamics_weight: 1000.0
+slack_dynamics_weight: 20000.0
 slack_obstacle_weight: 200.0
 
 # Obstacle avoidance parameters

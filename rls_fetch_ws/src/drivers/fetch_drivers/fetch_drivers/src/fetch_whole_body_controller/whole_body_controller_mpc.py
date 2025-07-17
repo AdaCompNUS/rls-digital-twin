@@ -10,11 +10,10 @@ import tf2_ros
 import tf.transformations as tf_trans
 from std_msgs.msg import Bool
 
-
 class WholeBodyMPC:
     def __init__(self, params):
         self.N = params['prediction_horizon']
-        self.dt = 0.05
+        self.dt = 0.1
         
         # Dimensions
         self.n_arm_joints = 7
@@ -33,7 +32,7 @@ class WholeBodyMPC:
         self.R_control = np.array(params['R_control'])
         
         # Slack weights
-        self.slack_dynamics_weight = params.get('slack_dynamics_weight', 1000.0)
+        self.slack_dynamics_weight = params.get('slack_dynamics_weight', 20000.0)
         
         # Terminal cost weights
         self.P_state = np.array(params['P_state'])
@@ -84,6 +83,9 @@ class WholeBodyMPC:
             # Extract the meaningful, decoupled errors
             cross_track_error = frenet_pos_error[1] # Error perpendicular to the desired direction
 
+            # along-track error
+            along_track_error = frenet_pos_error[0]
+
             # Yaw error cost using the (1 - cos(error)) metric for robustness
             yaw_error_cost = self.Q_state[2] * (1 - ca.cos(world_frame_error[2]))
 
@@ -93,9 +95,12 @@ class WholeBodyMPC:
 
             # Combined weighted state cost using the Frenet-frame errors
             # Penalize cross-track error to stay on the path, not along-track error.
-            frenet_pos_cost = self.Q_state[1] * cross_track_error**2
+            frenet_pos_cost = self.Q_state[1] * cross_track_error**2 + self.Q_state[0] * along_track_error**2
+
+            # add the cost for the world frame error
+            world_frame_cost = self.Q_state[0] * world_frame_error[0]**2 + self.Q_state[1] * world_frame_error[1]**2 
             
-            state_cost = frenet_pos_cost + yaw_error_cost + joint_cost
+            state_cost =  yaw_error_cost + joint_cost + world_frame_cost
 
             cost += state_cost
             
@@ -144,7 +149,7 @@ class WholeBodyMPC:
                 opti.subject_to(U[2+j,i] >= -self.max_joint_vel[j])
         
         # Non-negativity constraints for slack variables (unchanged)
-        opti.subject_to(opti.bounded(0, slack_dynamics, 1.0))
+        # opti.subject_to(opti.bounded(0, slack_dynamics, 1.0))
         
         # Initial state constraint (no slack) (unchanged)
         opti.subject_to(X[:,0] == X0)
@@ -171,7 +176,7 @@ class WholeBodyMPC:
         opts = {
             'ipopt.print_level': 0 if not self.debug else 3,
             'print_time': 0 if not self.debug else 1,
-            'ipopt.max_iter': 100,
+            'ipopt.max_iter': 200,
             'ipopt.tol': 1e-4,
             'ipopt.acceptable_tol': 1e-3,
             'ipopt.acceptable_obj_change_tol': 1e-4,
@@ -268,7 +273,7 @@ class WholeBodyController:
                 [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]),
             'R_control': rospy.get_param('~R_control', 
                 [2.0, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]),
-            'slack_dynamics_weight': rospy.get_param('~slack_dynamics_weight', 1000.0),
+            'slack_dynamics_weight': rospy.get_param('~slack_dynamics_weight', 20000.0),
             'base_pos_threshold': rospy.get_param('~base_pos_threshold', 0.05),
             'min_waypoint_distance': rospy.get_param('~min_waypoint_distance', 0.05),
             'trajectory_end_threshold': rospy.get_param('~trajectory_end_threshold', 0.05),
@@ -401,7 +406,7 @@ class WholeBodyController:
             angle_diff = min(angle_diff, 2*np.pi - angle_diff)
             
             # Combined distance (weighted sum)
-            combined_dist = pos_dist + 0.5 * angle_diff
+            combined_dist = pos_dist + 0.2 * angle_diff
             
             if combined_dist < min_dist:
                 min_dist = combined_dist
@@ -412,7 +417,7 @@ class WholeBodyController:
     def construct_reference_from_waypoint(self, start_idx):
         """Construct reference trajectory starting from the given waypoint index"""
         ref = np.zeros((self.mpc.nx, self.mpc.N+1))
-        start_idx += 10
+        start_idx += 1
         for i in range(self.mpc.N+1):
             idx = min(start_idx + i, len(self.merged_traj) - 1)
             ref[:,i] = self.merged_traj[idx]
@@ -545,6 +550,8 @@ class WholeBodyController:
         twist = Twist()
         twist.linear.x = float(u[0])
         twist.angular.z = float(u[1])
+        # if abs(u[0]) < 0.03 and abs(u[1]) < 0.2 and abs(u[1]) > 0.05:
+        #     twist.angular.z = 0.3
         self.cmd_vel_pub.publish(twist)
         
         # Joint command
