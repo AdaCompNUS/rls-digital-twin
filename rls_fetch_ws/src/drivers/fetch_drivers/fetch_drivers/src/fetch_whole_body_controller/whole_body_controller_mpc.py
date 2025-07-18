@@ -414,51 +414,28 @@ class WholeBodyController:
         
         return nearest_idx
 
-    def construct_reference_from_waypoint(self, start_idx):
-        """Construct reference trajectory starting from the given waypoint index"""
-        ref = np.zeros((self.mpc.nx, self.mpc.N+1))
+    def construct_reference_from_waypoint(self, start_idx, current_state):
+        """Construct reference trajectory starting from the given waypoint index and unwrap orientation."""
+        ref = np.zeros((self.mpc.nx, self.mpc.N + 1))
         start_idx += 1
-        for i in range(self.mpc.N+1):
+
+        # First, build the reference trajectory from the global path
+        for i in range(self.mpc.N + 1):
             idx = min(start_idx + i, len(self.merged_traj) - 1)
-            ref[:,i] = self.merged_traj[idx]
-            
+            ref[:, i] = self.merged_traj[idx]
+
+        # Extract the sequence of orientations from the reference trajectory
+        ref_orientations = ref[2, :]
+
+        # Prepend the current orientation to ensure the unwrapped path is continuous with the robot's state
+        orientations_to_unwrap = np.insert(ref_orientations, 0, current_state[2])
+        unwrapped_orientations = np.unwrap(orientations_to_unwrap)
+
+        # Replace the original orientations with the unwrapped ones.
+        # The first element of unwrapped_orientations corresponds to the current state, so we skip it.
+        ref[2, :] = unwrapped_orientations[1:]
+
         return ref
-
-    def unwrap_reference_yaw(self, ref_traj, current_yaw):
-        """
-        Unwraps the yaw angles in the reference trajectory to be continuous.
-        
-        This prevents the MPC from commanding large, incorrect turns when the
-        reference path crosses the -pi/+pi boundary.
-        
-        Args:
-            ref_traj (np.array): The reference trajectory (nx, N+1).
-            current_yaw (float): The robot's current yaw angle.
-
-        Returns:
-            np.array: The reference trajectory with unwrapped yaw angles.
-        """
-        unwrapped_ref = np.copy(ref_traj)
-        last_yaw = current_yaw
-        
-        # Iterate through the prediction horizon
-        for i in range(unwrapped_ref.shape[1]):
-            yaw = unwrapped_ref[2, i]
-            # Calculate the difference from the last yaw
-            delta = yaw - last_yaw
-            
-            # If the jump is larger than pi, it's a wrap-around
-            if delta > np.pi:
-                # Jumped from +pi to -pi, so subtract 2*pi
-                unwrapped_ref[2, i] -= 2 * np.pi
-            elif delta < -np.pi:
-                # Jumped from -pi to +pi, so add 2*pi
-                unwrapped_ref[2, i] += 2 * np.pi
-                
-            # Update the last yaw with the newly unwrapped value
-            last_yaw = unwrapped_ref[2, i]
-            
-        return unwrapped_ref
 
     def publish_path_as_marker(self, path, publisher, r, g, b, marker_id):
         """Publish a path as a LINE_STRIP marker."""
@@ -526,19 +503,16 @@ class WholeBodyController:
         self.last_waypoint_idx = nearest_idx
         
         # Generate reference trajectory based on nearest waypoint
-        ref = self.construct_reference_from_waypoint(nearest_idx)
-        
-        # Use the robot's current yaw as the anchor for unwrapping
-        unwrapped_ref = self.unwrap_reference_yaw(ref, current_state[2])
+        ref = self.construct_reference_from_waypoint(nearest_idx, current_state)
         
         if self.params['debug']:
             rospy.logdebug(f"Nearest waypoint index: {nearest_idx} of {len(self.merged_traj)}")
-            # Visualize the UNWRAPPED reference path
-            self.publish_path_as_marker(unwrapped_ref.T, self.ref_path_pub, 1.0, 0.0, 0.0, 0)
+            # Visualize the reference path
+            self.publish_path_as_marker(ref.T, self.ref_path_pub, 1.0, 0.0, 0.0, 0)
             start_time = rospy.Time.now()
             
-        # Solve MPC using the unwrapped reference trajectory
-        X, U = self.mpc.solve(current_state, unwrapped_ref)
+        # Solve MPC using the reference trajectory
+        X, U = self.mpc.solve(current_state, ref)
         
         if self.params['debug']:
             solve_time = (rospy.Time.now() - start_time).to_sec()
