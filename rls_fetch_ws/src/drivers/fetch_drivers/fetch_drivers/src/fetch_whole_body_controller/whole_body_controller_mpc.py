@@ -86,22 +86,23 @@ class WholeBodyMPC:
             # along-track error
             along_track_error = frenet_pos_error[0]
 
-            # Yaw error cost using the (1 - cos(error)) metric for robustness
-            yaw_error_cost = self.Q_state[2] * (1 - ca.cos(world_frame_error[2]))
+            # Since the reference yaw is unwrapped, we can use a simple quadratic cost.
+            # This is more effective than a cosine-based cost for unwrapped angles.
+            yaw_error_cost = self.Q_state[2] * (world_frame_error[2]**2)
 
             # Joint position error cost (remains the same)
             joint_error = world_frame_error[3:]
             joint_cost = self.Q_state[3:].reshape(1, self.nx-3) @ (joint_error * joint_error)
 
-            # Combined weighted state cost using the Frenet-frame errors
-            # Penalize cross-track error to stay on the path, not along-track error.
+            # This penalizes deviation from the path (cross-track) and progress along
+            # the path (along-track) more appropriately for this task.
             frenet_pos_cost = self.Q_state[1] * cross_track_error**2 + self.Q_state[0] * along_track_error**2
-
-            # add the cost for the world frame error
-            world_frame_cost = self.Q_state[0] * world_frame_error[0]**2 + self.Q_state[1] * world_frame_error[1]**2 
             
-            state_cost =  yaw_error_cost + joint_cost + world_frame_cost
-
+            # Use a combination of Frenet and world-frame costs for robustness.
+            # The world-frame cost ensures we still make progress towards the global goal.
+            world_frame_cost = self.Q_state[0] * world_frame_error[0]**2 + self.Q_state[1] * world_frame_error[1]**2
+            
+            state_cost = frenet_pos_cost + yaw_error_cost + joint_cost + world_frame_cost
             cost += state_cost
             
             # Control costs
@@ -117,8 +118,8 @@ class WholeBodyMPC:
         # Terminal position cost (world frame)
         terminal_pos_cost = self.P_state[0] * terminal_error[0]**2 + self.P_state[1] * terminal_error[1]**2
 
-        # Terminal yaw cost (using 1-cos to handle wrapping)
-        terminal_yaw_cost = self.P_state[2] * (1 - ca.cos(terminal_error[2]))
+        # Terminal yaw cost (quadratic on unwrapped angle error)
+        terminal_yaw_cost = self.P_state[2] * (terminal_error[2]**2)
         
         # Terminal joint cost
         terminal_joint_error = terminal_error[3:]
@@ -429,7 +430,7 @@ class WholeBodyController:
 
         # Prepend the current orientation to ensure the unwrapped path is continuous with the robot's state
         orientations_to_unwrap = np.insert(ref_orientations, 0, current_state[2])
-        unwrapped_orientations = np.unwrap(orientations_to_unwrap)
+        unwrapped_orientations = np.unwrap(orientations_to_unwrap, period=2*np.pi)
 
         # Replace the original orientations with the unwrapped ones.
         # The first element of unwrapped_orientations corresponds to the current state, so we skip it.
@@ -520,7 +521,11 @@ class WholeBodyController:
             if X is not None:
                 # Visualize MPC planned path (green)
                 self.publish_path_as_marker(X.T, self.mpc_path_pub, 0.0, 1.0, 0.0, 1)
-        
+
+                # Print reference and optimized yaw values for debugging
+                # rospy.loginfo("Reference Yaw (rad): " + np.array2string(ref[2, :], precision=2))
+                # rospy.loginfo("Optimized Yaw (rad):  " + np.array2string(X[2, :], precision=2))
+
         if U is None:
             rospy.logerr("MPC solve failed. Stopping execution.")
             self.stop_execution(success=False)
