@@ -142,12 +142,10 @@ class WholeBodyMPC:
         
         # Input constraints
         for i in range(self.N):
-            opti.subject_to(opti.bounded(0, U[0,i], self.max_linear_vel))
-            opti.subject_to(U[1,i] <= self.max_angular_vel)
-            opti.subject_to(U[1,i] >= -self.max_angular_vel)
+            opti.subject_to(opti.bounded(-self.max_linear_vel, U[0,i], self.max_linear_vel))
+            opti.subject_to(opti.bounded(-self.max_angular_vel, U[1,i], self.max_angular_vel))
             for j in range(self.n_torso_joints + self.n_arm_joints):
-                opti.subject_to(U[2+j,i] <= self.max_joint_vel[j])
-                opti.subject_to(U[2+j,i] >= -self.max_joint_vel[j])
+                opti.subject_to(opti.bounded(-self.max_joint_vel[j], U[2+j,i], self.max_joint_vel[j]))
         
         # Non-negativity constraints for slack variables (unchanged)
         # opti.subject_to(opti.bounded(0, slack_dynamics, 1.0))
