@@ -1,0 +1,25 @@
+<launch>
+    <arg name="use_sim_time" default="false"/>
+    <arg name="config_file" default="$(find low_level_planning)/config/robot_localization_ekf.yaml"/>
+    
+    <!-- EKF node for sensor fusion -->
+    <node pkg="robot_localization" type="ekf_localization_node" 
+          name="ekf_localization" clear_params="true" output="screen">
+        
+        <!-- Load parameters from config file -->
+        <rosparam file="$(arg config_file)" command="load"/>
+        
+        <!-- Use simulation time if specified -->
+        <param name="use_sim_time" value="$(arg use_sim_time)"/>
+        
+        <!-- Remap topics if needed -->
+        <remap from="odometry/filtered" to="odometry/filtered"/>
+        <remap from="accel/filtered" to="accel/filtered"/>
+        
+    </node>
+    
+    <!-- Static transform from base_link to IMU (adjust as needed for your robot) -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_imu_broadcaster"
+          args="0 0 0.1 0 0 0 base_link imu_link"/>
+    
+</launch> 

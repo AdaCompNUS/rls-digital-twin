@@ -10,6 +10,12 @@
     <!-- launch fetch cartesian service-->
     <!-- <include file="$(find cartesian_service)/launch/fetch_cartesian_service.launch"/> -->
 
+    <!-- Launch robot_localization EKF for sensor fusion (Gazebo version - no IMU) -->
+    <include file="$(find low_level_planning)/launch/include/robot_localization.launch.xml">
+        <arg name="use_sim_time" value="true"/>
+        <arg name="config_file" value="$(find low_level_planning)/config/robot_localization_ekf_gazebo.yaml"/>
+    </include>
+
     <!-- launch fetch navigation service -->
     <include file="$(find fetch_navigation)/launch/fetch_nav.launch" >
         <arg name="map_file" value="$(find low_level_planning)/maps/digital_twin_map.yaml" />
