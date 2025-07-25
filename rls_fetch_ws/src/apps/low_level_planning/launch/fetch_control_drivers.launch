@@ -22,11 +22,11 @@
 
     <!-- Compress RGB image -->
     <node name="compress_rgb" pkg="image_transport" type="republish" args="raw in:=/head_camera/rgb/image_raw compressed out:=/head_camera/rgb/image_raw" />
-    <node pkg="topic_tools" type="throttle" name="throttle_messages" args="messages /head_camera/rgb/image_raw/compressed 20.0" />
+    <node pkg="topic_tools" type="throttle" name="throttle_messages" args="messages /head_camera/rgb/image_raw/compressed 10.0 /throttled_camera/rgb/compressed" />
 
     <!-- Compress Depth image -->
-    <node name="compress_depth" pkg="image_transport" type="republish" args="raw in:=/head_camera/depth/image_raw compressed out:=/head_camera/depth/image_raw" />
-    <node pkg="topic_tools" type="throttle" name="throttle_messages_depth" args="messages /head_camera/depth/image_raw/compressed 20.0" />
+    <node name="compress_depth" pkg="image_transport" type="republish" args="raw in:=/head_camera/depth/image_raw compressedDepth out:=/head_camera/depth/image_raw" />
+    <node pkg="topic_tools" type="throttle" name="throttle_messages_depth" args="messages /head_camera/depth/image_raw/compressedDepth 10.0 /throttled_camera/depth/compressedDepth" />
 
     <node pkg="topic_tools" type="throttle" name="throttle_messages_state" args="messages /joint_states 36.0" />
     <node pkg="topic_tools" type="throttle" name="throttle_messages_pc" args="messages /head_camera/depth_downsample/points 1.0" />
