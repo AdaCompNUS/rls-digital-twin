@@ -535,9 +535,18 @@ class WholeBodyController:
 
         # Point head at a future waypoint
         if X is not None:
-            future_waypoint_idx = self.mpc.N - 1
-            target_point = [X[0, future_waypoint_idx], X[1, future_waypoint_idx], 1.0] # 1m height
-            self.head_controller.point_head_at(target_point, self.map_frame, duration=0.5)
+            # Check if there are enough waypoints left in the trajectory to look ahead
+            remaining_waypoints = len(self.merged_traj) - 1 - nearest_idx
+            if remaining_waypoints >= (self.mpc.N - 1):
+                future_waypoint_idx = self.mpc.N - 1
+                target_point = [X[0, future_waypoint_idx], X[1, future_waypoint_idx], 1.0]  # 1m height
+
+                # Also check if the target point is generally in front of the robot
+                vec_to_target = np.array(target_point[:2]) - current_state[:2]
+                robot_fwd_vec = np.array([np.cos(current_state[2]), np.sin(current_state[2])])
+                
+                if np.dot(vec_to_target, robot_fwd_vec) > 0:
+                    self.head_controller.point_head_at(target_point, self.map_frame, duration=0.5)
             
         # Publish commands
         self.publish_commands(U[:,0])
