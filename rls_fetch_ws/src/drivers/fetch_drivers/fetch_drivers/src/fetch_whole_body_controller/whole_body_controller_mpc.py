@@ -9,6 +9,7 @@ from visualization_msgs.msg import Marker
 import tf2_ros
 import tf.transformations as tf_trans
 from std_msgs.msg import Bool
+from fetch.utils.control_utils import HeadController
 
 class WholeBodyMPC:
     def __init__(self, params):
@@ -216,6 +217,9 @@ class WholeBodyController:
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
+        # Instantiate HeadController
+        self.head_controller = HeadController(self.tf_buffer)
+
         # Load parameters
         self.params = self.load_parameters()
         self.mpc = WholeBodyMPC(self.params)
@@ -528,6 +532,12 @@ class WholeBodyController:
             rospy.logerr("MPC solve failed. Stopping execution.")
             self.stop_execution(success=False)
             return
+
+        # Point head at a future waypoint
+        if X is not None:
+            future_waypoint_idx = self.mpc.N - 1
+            target_point = [X[0, future_waypoint_idx], X[1, future_waypoint_idx], 1.0] # 1m height
+            self.head_controller.point_head_at(target_point, self.map_frame, duration=0.5)
             
         # Publish commands
         self.publish_commands(U[:,0])
