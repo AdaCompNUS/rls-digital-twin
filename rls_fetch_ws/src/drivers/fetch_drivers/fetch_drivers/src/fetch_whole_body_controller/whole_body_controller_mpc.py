@@ -9,7 +9,7 @@ from visualization_msgs.msg import Marker
 import tf2_ros
 import tf.transformations as tf_trans
 from std_msgs.msg import Bool
-from fetch.utils.control_utils import HeadController
+from fetch_whole_body_controller.headcontroller import HeadController
 
 class WholeBodyMPC:
     def __init__(self, params):
