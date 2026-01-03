@@ -646,7 +646,7 @@ class Fetch:
                     arm_path_list.append(config.tolist())
                 else:
                     arm_path_list.append(config.to_list())
-
+            base_path = result.base_path
             rospy.loginfo(
                 f"Using whole_body_simplify with {len(arm_path_list)} arm configurations and {len(base_path_list)} base configurations"
             )
@@ -654,7 +654,7 @@ class Fetch:
             # Use whole_body_simplify instead of regular simplify
             whole_body_result = self.vamp_module.whole_body_simplify(
                 arm_path_list,
-                base_path_list,
+                base_path,
                 self.env,
                 self.simp_settings,
                 self.sampler,
